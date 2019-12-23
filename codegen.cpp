@@ -543,7 +543,10 @@ Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
 bool ok_reg_redu = true;
 
 template <> void setReg<Reg>(SmartReg &reg, Reg src) {
-  if (auto r = get_if<SReg>(&reg)) {
+  if (auto r = get_if<Reg>(&reg)) {
+    used_reg_pool.insert(*r);
+    Gen::inst(Inst::Mv, *r, src);
+  } else if (auto r = get_if<SReg>(&reg)) {
     used_reg_pool.insert(**r);
     Gen::inst(Inst::Mv, **r, src);
   } else if (auto r = get_if<SVar>(&reg)) {
@@ -556,6 +559,7 @@ template <> void setReg<Reg>(SmartReg &reg, Reg src) {
       if (sreg && ok_reg_redu) {
         used_reg_pool.insert(*sreg);
         Gen::inst(Inst::Mv, *sreg, src);
+        reg = *sreg;
       } else
         Gen::inst(Inst::Sw, src, -(*r)->frame, Reg::fp);
     }
@@ -569,7 +573,7 @@ template <> void setReg<Reg>(SmartReg &reg, Reg src) {
     I2F(src, ftmp);
     Gen::inst(Inst::Fmv, *r, ftmp);
   } else {
-    fprintf(stderr, "empty setReg");
+    fprintf(stderr, "empty setReg<Reg>\n");
   }
 }
 
@@ -577,6 +581,9 @@ template <> void setReg<FReg>(SmartReg &reg, FReg src) {
   if (auto r = get_if<FSReg>(&reg)) {
     f_used_reg_pool.insert(**r);
     Gen::inst(Inst::Fmv, **r, src);
+  } else if (auto r = get_if<FReg>(&reg)) {
+    f_used_reg_pool.insert(*r);
+    Gen::inst(Inst::Fmv, *r, src);
   } else if (auto r = get_if<SVar>(&reg)) {
     if ((*r)->type == FrameType::Int) {
       Reg itmp = getNextTemp();
@@ -600,7 +607,7 @@ template <> void setReg<FReg>(SmartReg &reg, FReg src) {
     F2I(src, itmp);
     Gen::inst(Inst::Mv, *r, itmp);
   } else {
-    fprintf(stderr, "empty setReg<FReg>");
+    fprintf(stderr, "empty setReg<FReg>\n");
   }
 }
 
@@ -1241,14 +1248,14 @@ void genIf(Node node) {
   if_id++;
   int now_id = if_id;
   SmartReg result;
-  bool old_ok_reg_redu = ok_reg_redu;
-  ok_reg_redu = false;
   Node exp = node.child()[0];
   if (exp->nodeType == STMT_NODE && exp.stmt().kind == ASSIGN_STMT) {
     result = genAssign(exp);
   } else {
     result = genExpr(exp);
   }
+  bool old_ok_reg_redu = ok_reg_redu;
+  ok_reg_redu = false;
   Gen::inst(Inst::Beqz, getReg<Reg>(result), "_if_end_" + to_string(now_id));
   Node run = node.child()[1];
   Node els = node.child()[2];
@@ -1319,15 +1326,26 @@ SmartReg genFunctionCall(Node node) {
       Parameter *signParam = func.identifier()
                                  .symbolTableEntry->attribute->attr
                                  .functionSignature->parameterList;
+      int stk_cnt = 0;
       for (Node param : params) {
         SmartReg res = genExpr(param);
         if (signParam->type->properties.dataType == INT_TYPE) {
-          Gen::inst(Inst::Mv, a_reg.front(), getReg<Reg>(res));
-          a_reg.pop_front();
+          if (a_reg.empty()) {
+            Gen::inst(Inst::Sw, getReg<Reg>(res), -8 - 4 * ++stk_cnt, Reg::sp);
+          } else {
+            Gen::inst(Inst::Mv, a_reg.front(), getReg<Reg>(res));
+            a_reg.pop_front();
+          }
         } else if (signParam->type->properties.dataType == FLOAT_TYPE) {
-          Gen::inst(Inst::Fmv, a_freg.front(), getReg<FReg>(res));
-          a_freg.pop_front();
+          if (a_freg.empty()) {
+            Gen::inst(Inst::Fsw, getReg<FReg>(res), -8 - 4 * ++stk_cnt,
+                      Reg::sp);
+          } else {
+            Gen::inst(Inst::Fmv, a_freg.front(), getReg<FReg>(res));
+            a_freg.pop_front();
+          }
         } else {
+          // TODO check array
           fprintf(stderr, "unknown in genFunctionCall\n");
         }
         signParam = signParam->next;
@@ -1551,7 +1569,6 @@ void genFuncParam(Node node) {
                       Reg::a4, Reg::a5, Reg::a6, Reg::a7};
   deque<FReg> a_freg = {FReg::fa0, FReg::fa1, FReg::fa2, FReg::fa3,
                         FReg::fa4, FReg::fa5, FReg::fa6, FReg::fa7};
-  // TODO: use stack when all reg is used.
   Node decls = node.child();
   for (Node decl : decls) {
     Node type = decl.child()[0];
@@ -1562,28 +1579,49 @@ void genFuncParam(Node node) {
     case NORMAL_ID: {
       if (kind == SCALAR_TYPE_DESCRIPTOR) {
         if (type->dataType == INT_TYPE) {
-          SmartReg reg = allocSavedIt();
+          if (a_reg.empty()) {
+            SmartReg reg = make_shared<FrameVar>(FrameType::Int, 4);
+            bindVar(id.identifier().symbolTableEntry->varid, reg);
+          } else {
+            SmartReg reg = allocSavedIt();
+            setReg<Reg>(reg, a_reg.front());
+            a_reg.pop_front();
+            bindVar(id.identifier().symbolTableEntry->varid, reg);
+          }
+        } else {
+          if (a_freg.empty()) {
+            SmartReg reg = make_shared<FrameVar>(FrameType::Float, 4);
+            bindVar(id.identifier().symbolTableEntry->varid, reg);
+          } else {
+            SmartReg reg = allocSavedItF();
+            setReg<FReg>(reg, a_freg.front());
+            a_freg.pop_front();
+            bindVar(id.identifier().symbolTableEntry->varid, reg);
+          }
+        }
+      } else {
+        if (a_reg.empty()) {
+          SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
+          bindVar(id.identifier().symbolTableEntry->varid, reg);
+        } else {
+          SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
           setReg<Reg>(reg, a_reg.front());
           a_reg.pop_front();
           bindVar(id.identifier().symbolTableEntry->varid, reg);
-        } else {
-          SmartReg reg = allocSavedItF();
-          setReg<FReg>(reg, a_freg.front());
-          a_freg.pop_front();
-          bindVar(id.identifier().symbolTableEntry->varid, reg);
         }
+      }
+    } break;
+    case ARRAY_ID: {
+
+      if (a_reg.empty()) {
+        SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
+        bindVar(id.identifier().symbolTableEntry->varid, reg);
       } else {
         SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
         setReg<Reg>(reg, a_reg.front());
         a_reg.pop_front();
         bindVar(id.identifier().symbolTableEntry->varid, reg);
       }
-    } break;
-    case ARRAY_ID: {
-      SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
-      setReg<Reg>(reg, a_reg.front());
-      a_reg.pop_front();
-      bindVar(id.identifier().symbolTableEntry->varid, reg);
     } break;
     default:
       fprintf(stderr, "unkonwn in genFuncParam\n");

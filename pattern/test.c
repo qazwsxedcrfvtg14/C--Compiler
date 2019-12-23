@@ -18,16 +18,28 @@ int fib(int x){
 	return fib(x-1)+fib(x-2);
 }
 
+int test(int a,int b,int c,int d,int e,int f,int g,int h,int i){
+	/*i=i+5;
+	i=i*i;*/
+	if(i>10){
+		i=i+100;
+	}
+	return i;
+}
+
 int MAIN()
 
 {
     int a0,b0,c0,d0,e0,f0,g0,h0,i0,j0,k0,l0,m0,o0,p0,q0,r0,s0,t0,u0,v0,w0,x0,y0,z0;
 	int result;
 
-	for(a0=1;a0<30;a0=a0+1){
+	write(test(1,2,3,4,5,6,7,8,887));
+	write("\n");
+	for(a0=1;a0<10;a0=a0+1){
 		write(fib(a0));
-		write("\n");
+		write(" ");
 	}
+	write("\n");
 
 	write("Enter a number:");
 
