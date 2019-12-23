@@ -1,4 +1,4 @@
-int main() {
+int MAIN() {
     int a, b;
     float c, d;
     a = 1;
@@ -12,6 +12,26 @@ int main() {
         write("wrong\n");
     } else {
         write("correct\n");
+    }
+    if (a >= b) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (a <= b) {
+        write("wrong\n");
+    } else {
+        write("correct\n");
+    }
+    if (a-1 >= b) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (a <= b+1) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
     }
     if (a == b) {
         write("wrong\n");
@@ -36,10 +56,25 @@ int main() {
     } else {
         write("correct\n");
     }
+    if (c >= d) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (c <= d) {
+        write("wrong\n");
+    } else {
+        write("correct\n");
+    }
     if (c != d) {
         write("correct\n");
     } else {
         write("wrong\n");
+    }
+    if (c == d) {
+        write("wrong\n");
+    } else {
+        write("correct\n");
     }
 
     if (a && b) {
@@ -49,6 +84,22 @@ int main() {
     if (a || b) {
         write("correct\n");
     }
+
+    if (c && d) {
+        write("wrong\n");
+    }
+
+    if (c || d) {
+        write("correct\n");
+    }
+    c=c+d;
+    c=c-d;
+    c=c*d;
+    c=c/d;
+    a=b+a;
+    a=b-a;
+    a=b*a;
+    a=b/a;
 
     a = 0;
     while (a<10) {

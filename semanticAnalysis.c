@@ -371,6 +371,10 @@ void declareIdList(AST_NODE* declarationNode, SymbolAttributeKind isVariableOrTy
                 }
                 else
                 {
+                    if(traverseIDList->child && traverseIDList->child->nodeType != CONST_VALUE_NODE)
+                        evaluateExprValue(traverseIDList->child);
+                    else if(traverseIDList->child)
+                        processConstValueNode(traverseIDList->child);
                     attribute->attr.typeDescriptor = typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
                 }
                 break;
@@ -479,7 +483,6 @@ void checkWriteFunction(AST_NODE* functionCallNode)
 
     AST_NODE* actualParameterList = functionIDNode->rightSibling;
     processGeneralNode(actualParameterList);
-
     AST_NODE* actualParameter = actualParameterList->child;
     
     int actualParameterNumber = 0;
@@ -684,11 +687,18 @@ void getExprOrConstValue(AST_NODE* exprOrConstNode, int* iValue, float* fValue)
 }
 
 void evaluateExprValue(AST_NODE* exprNode)
-{
-    if(exprNode->semantic_value.exprSemanticValue.kind == BINARY_OPERATION)
+{   
+    if(exprNode->nodeType == CONST_VALUE_NODE)
+    {
+        processConstValueNode(exprNode);
+        return;
+    }
+    else if(exprNode->semantic_value.exprSemanticValue.kind == BINARY_OPERATION)
     {
         AST_NODE* leftOp = exprNode->child;
         AST_NODE* rightOp = leftOp->rightSibling;
+        evaluateExprValue(leftOp);
+        evaluateExprValue(rightOp);
         if(leftOp->dataType == INT_TYPE && rightOp->dataType == INT_TYPE)
         {
             int leftValue = 0;
@@ -795,6 +805,7 @@ void evaluateExprValue(AST_NODE* exprNode)
     else
     {
         AST_NODE* operand = exprNode->child;
+        evaluateExprValue(operand);
         if(operand->dataType == INT_TYPE)
         {
             int operandValue = 0;
