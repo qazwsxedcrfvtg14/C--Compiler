@@ -480,7 +480,7 @@ template <> Reg getReg<Reg>(const SmartReg &reg, Reg avoid) {
     F2I(*r, tmp);
     return tmp;
   } else {
-    fprintf(stderr, "empty getReg");
+    fprintf(stderr, "empty getReg<Reg>\n");
     return Reg::x0;
   }
 }
@@ -516,7 +516,7 @@ template <> FReg getReg<FReg>(const SmartReg &reg, FReg avoid) {
     I2F(*r, tmp);
     return tmp;
   } else {
-    fprintf(stderr, "empty getReg<FReg>");
+    fprintf(stderr, "empty getReg<FReg>\n");
     return FReg::null;
   }
 }
@@ -527,15 +527,19 @@ template <> FReg getReg<FReg>(const SmartReg &reg) {
 
 Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
   if (auto r = get_if<SVar>(&reg)) {
-    if ((*r)->type == FrameType::ArrayPtr) {
-      return getReg<Reg>(reg);
-    } else {
+    if ((*r)->type == FrameType::Unknown) {
       Reg tmp = getNextTemp(avoid);
       Gen::inst(Inst::Addi, tmp, Reg::fp, -(*r)->frame);
       return tmp;
+    } else {
+      return getReg<Reg>(reg);
     }
+  } else if (auto r = get_if<SReg>(&reg)) {
+    return **r;
+  } else if (auto r = get_if<Reg>(&reg)) {
+    return *r;
   } else {
-    fprintf(stderr, "empty getAddr");
+    fprintf(stderr, "empty getAddr\n");
     return Reg::x0;
   }
 }
@@ -973,12 +977,6 @@ SmartReg genIntExpr(Node node) {
   case CONST_VALUE_NODE:
     switch (node.cons()->const_type) {
     case INTEGERC:
-      // Gen::segment("data");
-      // Gen::label("_CONSTANT_" + to_string(const_id), ".word",
-      //           node.cons()->const_u.intval);
-      // Gen::segment("text");
-      // Gen::inst(Inst::Lw, Reg::t0, "_CONSTANT_" + to_string(const_id));
-      // const_id++;
       if (node.cons()->const_u.intval) {
         Gen::inst(Inst::Li, Reg::t0, node.cons()->const_u.intval);
         result = Reg::t0;
@@ -996,21 +994,30 @@ SmartReg genIntExpr(Node node) {
     switch (node.identifier().kind) {
     case NORMAL_ID:
       if (node.identifier().symbolTableEntry->nestingLevel == 0) {
-        Gen::inst(Inst::Lw, Reg::t0, "_g_" + node.name());
-        result = Reg::t0;
+        if (node->dataType == INT_PTR_TYPE) {
+          Gen::inst(Inst::La, Reg::t0, "_g_" + node.name());
+          result = Reg::t0;
+        } else {
+          Gen::inst(Inst::Lw, Reg::t0, "_g_" + node.name());
+          result = Reg::t0;
+        }
       } else {
-        // Gen::inst(
-        //    Inst::Mv, Reg::t0,
-        //    getReg<Reg>(bind_map[node.identifier().symbolTableEntry->varid]));
-        // result = Reg::t0;
-        result =
-            getReg<Reg>(bind_map[node.identifier().symbolTableEntry->varid]);
+        if (node->dataType == INT_PTR_TYPE) {
+          result = getAddr(bind_map[node.identifier().symbolTableEntry->varid]);
+        } else {
+          result =
+              getReg<Reg>(bind_map[node.identifier().symbolTableEntry->varid]);
+        }
       }
       break;
     case ARRAY_ID: {
-      SmartReg location = genArrayLocation(node);
-      Gen::inst(Inst::Lw, Reg::t0, 0, getReg<Reg>(location));
-      result = Reg::t0;
+      if (node->dataType == INT_PTR_TYPE) {
+        result = genArrayLocation(node);
+      } else {
+        SmartReg location = genArrayLocation(node);
+        Gen::inst(Inst::Lw, Reg::t0, 0, getReg<Reg>(location));
+        result = Reg::t0;
+      }
     } break;
     default:
       fprintf(stderr, "unknown in genIntExpr\n");
@@ -1111,21 +1118,29 @@ SmartReg genFloatExpr(Node node) {
     switch (node.identifier().kind) {
     case NORMAL_ID:
       if (node.identifier().symbolTableEntry->nestingLevel == 0) {
-        Gen::inst(Inst::Flw_sym, FReg::ft0, "_g_" + node.name(), Reg::t2);
-        result = FReg::ft0;
+        if (node->dataType == FLOAT_PTR_TYPE) {
+          result = getAddr(bind_map[node.identifier().symbolTableEntry->varid]);
+        } else {
+          Gen::inst(Inst::Flw_sym, FReg::ft0, "_g_" + node.name(), Reg::t2);
+          result = FReg::ft0;
+        }
       } else {
-        // Gen::inst(
-        //     Inst::Fmv, FReg::ft0,
-        //     getReg<FReg>(bind_map[node.identifier().symbolTableEntry->varid]));
-        // result = FReg::ft0;
-        result =
-            getReg<FReg>(bind_map[node.identifier().symbolTableEntry->varid]);
+        if (node->dataType == FLOAT_PTR_TYPE) {
+          result = getAddr(bind_map[node.identifier().symbolTableEntry->varid]);
+        } else {
+          result =
+              getReg<FReg>(bind_map[node.identifier().symbolTableEntry->varid]);
+        }
       }
       break;
     case ARRAY_ID: {
-      SmartReg location = genArrayLocation(node);
-      Gen::inst(Inst::Flw, FReg::ft0, 0, getReg<Reg>(location));
-      result = FReg::ft0;
+      if (node->dataType == FLOAT_PTR_TYPE) {
+        result = genArrayLocation(node);
+      } else {
+        SmartReg location = genArrayLocation(node);
+        Gen::inst(Inst::Flw, FReg::ft0, 0, getReg<Reg>(location));
+        result = FReg::ft0;
+      }
     } break;
     default:
       fprintf(stderr, "unknown in genFloatExpr\n");
@@ -1159,6 +1174,10 @@ SmartReg genExpr(Node node) {
     Gen::inst(Inst::La, Reg::t0, "_CONSTANT_" + to_string(const_id));
     const_id++;
     return Reg::t0;
+  } else if (node->dataType == INT_PTR_TYPE) {
+    return genIntExpr(node);
+  } else if (node->dataType == FLOAT_PTR_TYPE) {
+    return genFloatExpr(node);
   } else {
     fprintf(stderr, "unknown in genExpr\n");
     return Reg::t0;
@@ -1168,20 +1187,24 @@ SmartReg genExpr(Node node) {
 SmartReg genArrayLocation(Node node) {
   auto sym = node.identifier().symbolTableEntry;
   auto &prop = sym->attribute->attr.typeDescriptor->properties.arrayProperties;
-  int dim = 1;
-  Node exprs = node.child();
+  Node expr = node.child();
   SmartReg location = allocSavedIt();
   setReg<Reg>(location, Reg::x0);
-  for (Node expr : exprs) {
+  for (int dim = 1; dim <= prop.dimension; dim++) {
     int factor = 4;
     if (dim < prop.dimension)
       factor = prop.sizeInEachDimension[dim];
-    SmartReg res = genIntExpr(expr);
-    Gen::inst(Inst::Add, Reg::t0, getReg<Reg>(res), getReg<Reg>(location));
+    if (expr) {
+      SmartReg res = genIntExpr(expr);
+      Gen::inst(Inst::Add, Reg::t0, getReg<Reg>(res), getReg<Reg>(location));
+    } else {
+      Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(location));
+    }
     Gen::inst(Inst::Li, Reg::t1, factor);
     Gen::inst(Inst::Mul, Reg::t0, Reg::t0, Reg::t1);
     setReg<Reg>(location, Reg::t0);
-    dim++;
+    if (expr)
+      ++expr;
   }
   Reg addr;
   if (sym->nestingLevel == 0) {
@@ -1329,24 +1352,31 @@ SmartReg genFunctionCall(Node node) {
       int stk_cnt = 0;
       for (Node param : params) {
         SmartReg res = genExpr(param);
-        if (signParam->type->properties.dataType == INT_TYPE) {
+        if (signParam->type->kind == SCALAR_TYPE_DESCRIPTOR) {
+          if (signParam->type->properties.dataType == INT_TYPE) {
+            if (a_reg.empty()) {
+              Gen::inst(Inst::Sw, getReg<Reg>(res), -8 - 4 * ++stk_cnt,
+                        Reg::sp);
+            } else {
+              Gen::inst(Inst::Mv, a_reg.front(), getReg<Reg>(res));
+              a_reg.pop_front();
+            }
+          } else if (signParam->type->properties.dataType == FLOAT_TYPE) {
+            if (a_freg.empty()) {
+              Gen::inst(Inst::Fsw, getReg<FReg>(res), -8 - 4 * ++stk_cnt,
+                        Reg::sp);
+            } else {
+              Gen::inst(Inst::Fmv, a_freg.front(), getReg<FReg>(res));
+              a_freg.pop_front();
+            }
+          }
+        } else {
           if (a_reg.empty()) {
             Gen::inst(Inst::Sw, getReg<Reg>(res), -8 - 4 * ++stk_cnt, Reg::sp);
           } else {
             Gen::inst(Inst::Mv, a_reg.front(), getReg<Reg>(res));
             a_reg.pop_front();
           }
-        } else if (signParam->type->properties.dataType == FLOAT_TYPE) {
-          if (a_freg.empty()) {
-            Gen::inst(Inst::Fsw, getReg<FReg>(res), -8 - 4 * ++stk_cnt,
-                      Reg::sp);
-          } else {
-            Gen::inst(Inst::Fmv, a_freg.front(), getReg<FReg>(res));
-            a_freg.pop_front();
-          }
-        } else {
-          // TODO check array
-          fprintf(stderr, "unknown in genFunctionCall\n");
         }
         signParam = signParam->next;
       }
@@ -1604,7 +1634,7 @@ void genFuncParam(Node node) {
           SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
           bindVar(id.identifier().symbolTableEntry->varid, reg);
         } else {
-          SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
+          SmartReg reg = allocSavedIt();
           setReg<Reg>(reg, a_reg.front());
           a_reg.pop_front();
           bindVar(id.identifier().symbolTableEntry->varid, reg);
@@ -1612,12 +1642,11 @@ void genFuncParam(Node node) {
       }
     } break;
     case ARRAY_ID: {
-
       if (a_reg.empty()) {
         SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
         bindVar(id.identifier().symbolTableEntry->varid, reg);
       } else {
-        SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
+        SmartReg reg = allocSavedIt();
         setReg<Reg>(reg, a_reg.front());
         a_reg.pop_front();
         bindVar(id.identifier().symbolTableEntry->varid, reg);
