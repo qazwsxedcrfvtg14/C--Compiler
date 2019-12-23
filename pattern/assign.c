@@ -1,3 +1,7 @@
+
+int xd(int zz[5][6]){
+
+}
 typedef int INT;
 typedef float FLOAT;
 typedef int INTA[2];
@@ -59,7 +63,6 @@ int MAIN() {
     l9[1] = 99;
     l10[0] = 10.0;
     l10[1] = 100.0;
-
     write(g1);
     write("\n");
     write(g2);

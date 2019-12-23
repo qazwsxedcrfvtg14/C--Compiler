@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include <bitset>
+#include <deque>
 #include <initializer_list>
 #include <list>
 #include <map>
@@ -237,8 +238,7 @@ enum class FrameType {
   Unknown,
   Int,
   Float,
-  IntArray,
-  FloatArray,
+  ArrayPtr,
 };
 
 template <typename T> FrameType reg2Type();
@@ -453,17 +453,6 @@ void I2F(Reg a, FReg b) { Gen::inst(Inst::Fcvt_s_w, b, a); }
 set<Reg> used_reg_pool;
 set<FReg> f_used_reg_pool;
 
-Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
-  if (auto r = get_if<SVar>(&reg)) {
-    Reg tmp = getNextTemp(avoid);
-    Gen::inst(Inst::Addi, tmp, Reg::fp, -(*r)->frame);
-    return tmp;
-  } else {
-    fprintf(stderr, "empty getAddr");
-    return Reg::x0;
-  }
-}
-
 template <> Reg getReg<Reg>(const SmartReg &reg, Reg avoid) {
   if (auto r = get_if<SReg>(&reg)) {
     sreg_lru.touch(**r);
@@ -536,6 +525,23 @@ template <> FReg getReg<FReg>(const SmartReg &reg) {
   return getReg<FReg>(reg, FReg::null);
 }
 
+Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
+  if (auto r = get_if<SVar>(&reg)) {
+    if ((*r)->type == FrameType::ArrayPtr) {
+      return getReg<Reg>(reg);
+    } else {
+      Reg tmp = getNextTemp(avoid);
+      Gen::inst(Inst::Addi, tmp, Reg::fp, -(*r)->frame);
+      return tmp;
+    }
+  } else {
+    fprintf(stderr, "empty getAddr");
+    return Reg::x0;
+  }
+}
+
+bool ok_reg_redu = true;
+
 template <> void setReg<Reg>(SmartReg &reg, Reg src) {
   if (auto r = get_if<SReg>(&reg)) {
     used_reg_pool.insert(**r);
@@ -547,7 +553,7 @@ template <> void setReg<Reg>(SmartReg &reg, Reg src) {
       Gen::inst(Inst::Fsw, ftmp, -(*r)->frame, Reg::fp);
     } else {
       auto sreg = getSavedReg();
-      if (sreg) {
+      if (sreg && ok_reg_redu) {
         used_reg_pool.insert(*sreg);
         Gen::inst(Inst::Mv, *sreg, src);
       } else
@@ -578,7 +584,7 @@ template <> void setReg<FReg>(SmartReg &reg, FReg src) {
       Gen::inst(Inst::Sw, itmp, -(*r)->frame, Reg::fp);
     } else {
       auto sreg = getSavedFReg();
-      if (sreg) {
+      if (sreg && ok_reg_redu) {
         f_used_reg_pool.insert(*sreg);
         Gen::inst(Inst::Fmv, *sreg, src);
       } else
@@ -607,11 +613,15 @@ vector<FReg> f_free_reg_pool = {FReg::fs11, FReg::fs10, FReg::fs9, FReg::fs8,
 
 SReg getSavedReg() {
   if (free_reg_pool.empty()) {
-    auto sreg = sreg_lru.getSReg();
-    if (!sreg.has_value())
-      return nullptr;
-    if (free_reg_pool.empty()) {
-      fprintf(stderr, "empty pool in getSavedReg\n");
+    if (ok_reg_redu) {
+      auto sreg = sreg_lru.getSReg();
+      if (!sreg.has_value())
+        return nullptr;
+      if (free_reg_pool.empty()) {
+        fprintf(stderr, "empty pool in getSavedReg\n");
+        return nullptr;
+      }
+    } else {
       return nullptr;
     }
   }
@@ -626,11 +636,15 @@ SReg getSavedReg() {
 
 FSReg getSavedFReg() {
   if (f_free_reg_pool.empty()) {
-    auto sreg = f_sreg_lru.getSReg();
-    if (!sreg.has_value())
-      return nullptr;
-    if (f_free_reg_pool.empty()) {
-      fprintf(stderr, "empty pool in getSavedFReg\n");
+    if (ok_reg_redu) {
+      auto sreg = f_sreg_lru.getSReg();
+      if (!sreg.has_value())
+        return nullptr;
+      if (f_free_reg_pool.empty()) {
+        fprintf(stderr, "empty pool in getSavedFReg\n");
+        return nullptr;
+      }
+    } else {
       return nullptr;
     }
   }
@@ -1255,13 +1269,13 @@ SmartReg genFunctionCall(Node node) {
   // func_call_num++;
   // Gen::label("_func_call" + to_string(func_call_num));
   Node func = node.child()[0];
-  Node param = node.child()[1];
+  Node paramList = node.child()[1];
   if (func.name() == "write") {
-    SmartReg reg = genExpr(param.child());
-    if (param.child()->dataType == CONST_STRING_TYPE) {
+    SmartReg reg = genExpr(paramList.child());
+    if (paramList.child()->dataType == CONST_STRING_TYPE) {
       Gen::inst(Inst::Mv, Reg::a0, getReg<Reg>(reg));
       Gen::inst(Inst::Jal, "_write_str");
-    } else if (param.child()->dataType == INT_TYPE) {
+    } else if (paramList.child()->dataType == INT_TYPE) {
       Gen::inst(Inst::Mv, Reg::a0, getReg<Reg>(reg));
       Gen::inst(Inst::Jal, "_write_int");
     } else {
@@ -1276,8 +1290,29 @@ SmartReg genFunctionCall(Node node) {
     Gen::inst(Inst::Jal, "_read_float");
     return FReg::fa0;
   } else {
-    if (param->nodeType != NUL_NODE) {
-      // TODO pass parameters
+    if (paramList->nodeType != NUL_NODE) {
+      // TODO: use stack when all reg is used.
+      deque<Reg> a_reg = {Reg::a0, Reg::a1, Reg::a2, Reg::a3,
+                          Reg::a4, Reg::a5, Reg::a6, Reg::a7};
+      deque<FReg> a_freg = {FReg::fa0, FReg::fa1, FReg::fa2, FReg::fa3,
+                            FReg::fa4, FReg::fa5, FReg::fa6, FReg::fa7};
+      Node params = paramList.child();
+      Parameter *signParam = func.identifier()
+                                 .symbolTableEntry->attribute->attr
+                                 .functionSignature->parameterList;
+      for (Node param : params) {
+        SmartReg res = genExpr(param);
+        if (signParam->type->properties.dataType == INT_TYPE) {
+          Gen::inst(Inst::Mv, a_reg.front(), getReg<Reg>(res));
+          a_reg.pop_front();
+        } else if (signParam->type->properties.dataType == FLOAT_TYPE) {
+          Gen::inst(Inst::Fmv, a_freg.front(), getReg<FReg>(res));
+          a_freg.pop_front();
+        } else {
+          fprintf(stderr, "unknown in genFunctionCall\n");
+        }
+        signParam = signParam->next;
+      }
     }
     Gen::inst(Inst::Jal, Reg::ra, "_start_" + func.name());
     auto returnType =
@@ -1299,6 +1334,8 @@ void genWhile(Node node) {
   Node exp = node.child()[0];
   Node run = node.child()[1];
   SmartReg result;
+  bool old_ok_reg_redu = ok_reg_redu;
+  ok_reg_redu = false;
   Gen::label("_while_begin_" + to_string(now_id));
   if (exp->nodeType == STMT_NODE && exp.stmt().kind == ASSIGN_STMT) {
     result = genAssign(exp);
@@ -1315,6 +1352,55 @@ void genWhile(Node node) {
   }
   Gen::inst(Inst::J, "_while_begin_" + to_string(now_id));
   Gen::label("_while_end_" + to_string(now_id));
+  ok_reg_redu = old_ok_reg_redu;
+}
+
+void genFor(Node node) {
+  static int for_id = 0;
+  for_id++;
+  int now_id = for_id;
+  Node init = node.child()[0];
+  Node cond = node.child()[1];
+  Node fini = node.child()[2];
+  Node run = node.child()[3];
+  if (init->nodeType == NONEMPTY_ASSIGN_EXPR_LIST_NODE) {
+    Node childs = init.child();
+    for (Node child : childs)
+      genAssign(child);
+  }
+  bool old_ok_reg_redu = ok_reg_redu;
+  ok_reg_redu = false;
+  Gen::label("_for_begin_" + to_string(now_id));
+  if (cond->nodeType == NONEMPTY_RELOP_EXPR_LIST_NODE) {
+    SmartReg result;
+    Node exps = cond.child();
+    for (Node exp : exps) {
+      result = genExpr(exp);
+    }
+    Gen::inst(Inst::Beqz, getReg<Reg>(result), "_for_end_" + to_string(now_id));
+  } else {
+    // Do nothing
+  }
+  if (run->nodeType == STMT_NODE) {
+    genStmt(run);
+  } else if (run->nodeType == BLOCK_NODE) {
+    genBlock(run);
+  } else if (run->nodeType == NUL_NODE) {
+    // Do nothing
+  }
+  if (fini->nodeType == NONEMPTY_ASSIGN_EXPR_LIST_NODE) {
+    Node ends = fini.child();
+    for (Node end : ends) {
+      if (end->nodeType == STMT_NODE) {
+        genAssign(end);
+      } else if (end->nodeType == EXPR_NODE) {
+        genExpr(end);
+      }
+    }
+  }
+  Gen::inst(Inst::J, "_for_begin_" + to_string(now_id));
+  Gen::label("_for_end_" + to_string(now_id));
+  ok_reg_redu = old_ok_reg_redu;
 }
 
 void genStmt(Node node) {
@@ -1323,6 +1409,7 @@ void genStmt(Node node) {
     genWhile(node);
     break;
   case FOR_STMT:
+    genFor(node);
     break;
   case ASSIGN_STMT:
     genAssign(node);
@@ -1439,10 +1526,56 @@ void genBlock(Node node) {
     }
   }
 }
+
+void genFuncParam(Node node) {
+  deque<Reg> a_reg = {Reg::a0, Reg::a1, Reg::a2, Reg::a3,
+                      Reg::a4, Reg::a5, Reg::a6, Reg::a7};
+  deque<FReg> a_freg = {FReg::fa0, FReg::fa1, FReg::fa2, FReg::fa3,
+                        FReg::fa4, FReg::fa5, FReg::fa6, FReg::fa7};
+  // TODO: use stack when all reg is used.
+  Node decls = node.child();
+  for (Node decl : decls) {
+    Node type = decl.child()[0];
+    Node id = decl.child()[1];
+    auto sym = id.identifier().symbolTableEntry;
+    auto kind = sym->attribute->attr.typeDescriptor->kind;
+    switch (id.identifier().kind) {
+    case NORMAL_ID: {
+      if (kind == SCALAR_TYPE_DESCRIPTOR) {
+        if (type->dataType == INT_TYPE) {
+          SmartReg reg = allocSavedIt();
+          setReg<Reg>(reg, a_reg.front());
+          a_reg.pop_front();
+          bindVar(id.identifier().symbolTableEntry->varid, reg);
+        } else {
+          SmartReg reg = allocSavedItF();
+          setReg<FReg>(reg, a_freg.front());
+          a_freg.pop_front();
+          bindVar(id.identifier().symbolTableEntry->varid, reg);
+        }
+      } else {
+        SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
+        setReg<Reg>(reg, a_reg.front());
+        a_reg.pop_front();
+        bindVar(id.identifier().symbolTableEntry->varid, reg);
+      }
+    } break;
+    case ARRAY_ID: {
+      SmartReg reg = make_shared<FrameVar>(FrameType::ArrayPtr, 4);
+      setReg<Reg>(reg, a_reg.front());
+      a_reg.pop_front();
+      bindVar(id.identifier().symbolTableEntry->varid, reg);
+    } break;
+    default:
+      fprintf(stderr, "unkonwn in genFuncParam\n");
+    }
+  }
+}
+
 void genGDeclFunction(Node node) {
   Node type = node.child()[0];
   Node id = node.child()[1];
-  Node paramList = node.child()[2];
+  Node param = node.child()[2];
   Node block = node.child()[3];
   Gen::segment("text");
   Gen::label("_start_" + node.child()[1].name());
@@ -1454,8 +1587,8 @@ void genGDeclFunction(Node node) {
   Gen::inst(Inst::Sub, Reg::sp, Reg::sp, Reg::ra);
   function_frame_size = 0;
   cur_function_name = id.name();
-  // TODO call with parameters
   swap(codes, codes_tmp);
+  genFuncParam(param);
   genBlock(block);
   Gen::label("_end_" + id.name());
   swap(codes, codes_tmp);
