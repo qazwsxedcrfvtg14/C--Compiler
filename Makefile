@@ -2,7 +2,7 @@ TARGET = parser
 OBJECT = parser.tab.c parser.tab.o lex.yy.c alloc.o functions.o semanticAnalysis.o symbolTable.o codegen.o
 OUTPUT = parser.output parser.tab.h output.S output0.S
 #CC = clang -g
-#CXX = clang++ -g -std=c++17 -fsanitize=undefined
+#CXX = clang++ -g -O2 -std=c++17 -fsanitize=undefined
 CC = gcc -g
 CXX = g++ -g -O2 -std=c++17
 LEX = flex
@@ -12,7 +12,7 @@ LIBS = -lfl -lstdc++
 
 
 parser: parser.tab.o alloc.o functions.o symbolTable.o semanticAnalysis.o codegen.o
-	$(CC) -o $(TARGET) parser.tab.o alloc.o functions.o symbolTable.o semanticAnalysis.o codegen.o $(LIBS)
+	$(CXX) -o $(TARGET) parser.tab.o alloc.o functions.o symbolTable.o semanticAnalysis.o codegen.o $(LIBS)
 
 parser.tab.o: parser.tab.c lex.yy.c alloc.o functions.c symbolTable.o semanticAnalysis.o
 	$(CC) -c parser.tab.c
