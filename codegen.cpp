@@ -1,7 +1,10 @@
 #include "codegen.h"
 #include <bitset>
+#include <initializer_list>
+#include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <set>
 #include <unordered_map>
@@ -238,15 +241,41 @@ enum class FrameType {
   FloatArray,
 };
 
+template <typename T> FrameType reg2Type();
+
+template <> FrameType reg2Type<Reg>() { return FrameType::Int; }
+template <> FrameType reg2Type<FReg>() { return FrameType::Float; }
+
+multiset<pair<int, int>> free_frame;
+
 struct FrameVar {
+  FrameVar(FrameType _type, int _size) : type(_type), size(_size) {
+    auto it = free_frame.lower_bound(make_pair(_size, -1));
+    if (it == free_frame.end()) {
+      function_frame_size += size;
+      frame = function_frame_size;
+    } else {
+      auto p = *it;
+      frame = p.second;
+      p.first -= size;
+      p.second += size;
+      free_frame.erase(it);
+      if (p.first) {
+        free_frame.insert(p);
+      }
+    }
+  }
+  ~FrameVar() { free_frame.insert(make_pair(size, frame)); }
   int frame;
+  int size;
   FrameType type;
 };
 
 using Symbol = string;
 using SReg = shared_ptr<Reg>;
 using FSReg = shared_ptr<FReg>;
-using SmartReg = variant<Reg, SReg, FrameVar, FReg, FSReg>;
+using SVar = shared_ptr<FrameVar>;
+using SmartReg = variant<Reg, SReg, SVar, FReg, FSReg>;
 using InstArg = variant<Reg, FReg, Symbol, int, double>;
 
 using Codec = pair<Inst, vector<InstArg>>;
@@ -336,19 +365,84 @@ SmartReg genExpr(Node node);
 SmartReg genArrayLocation(Node node);
 int const_id = 0;
 
+template <typename T> void setReg(SmartReg &reg, T src);
+
+template <typename T> T getReg(const SmartReg &reg, T avoid);
+
+template <typename T> T getReg(const SmartReg &reg);
+
+SReg getSavedReg();
+FSReg getSavedFReg();
+
+unordered_map<int, SmartReg> bind_map;
+unordered_map<int, bool> bind_use;
+template <typename T> struct LRU {
+  // T lru(){return pos.back();}
+  // T mru(){return pos.front();}
+  void touch(const T &reg) {
+    auto it = iter.find(reg);
+    if (it != iter.end()) {
+      pos.erase(it->second);
+      pos.push_front(reg);
+      iter[reg] = pos.begin();
+    }
+  }
+  void add(const T &reg, int varid) {
+    pos.push_front(reg);
+    iter[reg] = pos.begin();
+    varid_map[reg] = varid;
+  }
+  void clear() {
+    pos.clear();
+    iter.clear();
+    varid_map.clear();
+  }
+  optional<T> getSReg() {
+    if (pos.empty())
+      return optional<T>();
+    T res = pos.back();
+    pos.pop_back();
+    iter.erase(res);
+    int varid = varid_map[res];
+    varid_map.erase(res);
+    SmartReg old = bind_map[varid];
+    SmartReg nw = make_shared<FrameVar>(reg2Type<T>(), 4);
+    if (bind_use[varid])
+      setReg<T>(nw, getReg<T>(old));
+    bind_map[varid] = nw;
+    return res;
+  }
+  list<T> pos;
+  unordered_map<T, typename list<T>::iterator> iter;
+  unordered_map<T, int> varid_map;
+};
+
+LRU<Reg> sreg_lru;
+LRU<FReg> f_sreg_lru;
+
 queue<Reg> temp_queue;
-Reg getNextTemp() {
+Reg getNextTemp(Reg avoid = Reg::x0) {
   Reg reg = temp_queue.front();
   temp_queue.pop();
   temp_queue.push(reg);
+  if (reg == avoid) {
+    reg = temp_queue.front();
+    temp_queue.pop();
+    temp_queue.push(reg);
+  }
   return reg;
 }
 
 queue<FReg> f_temp_queue;
-FReg getNextFTemp() {
+FReg getNextFTemp(FReg avoid = FReg::null) {
   FReg reg = f_temp_queue.front();
   f_temp_queue.pop();
   f_temp_queue.push(reg);
+  if (reg == avoid) {
+    reg = f_temp_queue.front();
+    f_temp_queue.pop();
+    f_temp_queue.push(reg);
+  }
   return reg;
 }
 
@@ -356,12 +450,13 @@ void F2I(FReg a, Reg b) { Gen::inst(Inst::Fcvt_w_s, b, a); }
 
 void I2F(Reg a, FReg b) { Gen::inst(Inst::Fcvt_s_w, b, a); }
 
+set<Reg> used_reg_pool;
+set<FReg> f_used_reg_pool;
+
 Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
-  if (auto r = get_if<FrameVar>(&reg)) {
-    Reg tmp = getNextTemp();
-    if (tmp == avoid)
-      tmp = getNextTemp();
-    Gen::inst(Inst::Addi, tmp, Reg::fp, -r->frame);
+  if (auto r = get_if<SVar>(&reg)) {
+    Reg tmp = getNextTemp(avoid);
+    Gen::inst(Inst::Addi, tmp, Reg::fp, -(*r)->frame);
     return tmp;
   } else {
     fprintf(stderr, "empty getAddr");
@@ -369,33 +464,30 @@ Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
   }
 }
 
-Reg getReg(const SmartReg &reg, Reg avoid = Reg::x0) {
-  if (auto r = get_if<SReg>(&reg))
+template <> Reg getReg<Reg>(const SmartReg &reg, Reg avoid) {
+  if (auto r = get_if<SReg>(&reg)) {
+    sreg_lru.touch(**r);
+    // used_reg_pool.insert(**r);
     return **r;
-  else if (auto r = get_if<FrameVar>(&reg)) {
-    Reg tmp = getNextTemp();
-    if (tmp == avoid)
-      tmp = getNextTemp();
-    if (r->type == FrameType::Float) {
+  } else if (auto r = get_if<SVar>(&reg)) {
+    Reg tmp = getNextTemp(avoid);
+    if ((*r)->type == FrameType::Float) {
       FReg ftmp = getNextFTemp();
-      Gen::inst(Inst::Flw, ftmp, -r->frame, Reg::fp);
+      Gen::inst(Inst::Flw, ftmp, -(*r)->frame, Reg::fp);
       F2I(ftmp, tmp);
     } else {
-      Gen::inst(Inst::Lw, tmp, -r->frame, Reg::fp);
+      Gen::inst(Inst::Lw, tmp, -(*r)->frame, Reg::fp);
     }
     return tmp;
   } else if (auto r = get_if<Reg>(&reg)) {
     return *r;
   } else if (auto r = get_if<FSReg>(&reg)) {
-    Reg tmp = getNextTemp();
-    if (tmp == avoid)
-      tmp = getNextTemp();
+    Reg tmp = getNextTemp(avoid);
+    // f_used_reg_pool.insert(**r);
     F2I(**r, tmp);
     return Reg::t0;
   } else if (auto r = get_if<FReg>(&reg)) {
-    Reg tmp = getNextTemp();
-    if (tmp == avoid)
-      tmp = getNextTemp();
+    Reg tmp = getNextTemp(avoid);
     F2I(*r, tmp);
     return tmp;
   } else {
@@ -404,49 +496,67 @@ Reg getReg(const SmartReg &reg, Reg avoid = Reg::x0) {
   }
 }
 
-FReg getFReg(const SmartReg &reg, FReg avoid = FReg::null) {
-  if (auto r = get_if<FSReg>(&reg))
+template <> Reg getReg<Reg>(const SmartReg &reg) {
+  return getReg<Reg>(reg, Reg::x0);
+}
+
+template <> FReg getReg<FReg>(const SmartReg &reg, FReg avoid) {
+  if (auto r = get_if<FSReg>(&reg)) {
+    f_sreg_lru.touch(**r);
+    // f_used_reg_pool.insert(**r);
     return **r;
-  else if (auto r = get_if<FrameVar>(&reg)) {
-    FReg tmp = getNextFTemp();
-    if (tmp == avoid)
-      tmp = getNextFTemp();
-    if (r->type == FrameType::Int) {
+  } else if (auto r = get_if<SVar>(&reg)) {
+    FReg tmp = getNextFTemp(avoid);
+    if ((*r)->type == FrameType::Int) {
       Reg itmp = getNextTemp();
-      Gen::inst(Inst::Lw, itmp, -r->frame, Reg::fp);
+      Gen::inst(Inst::Lw, itmp, -(*r)->frame, Reg::fp);
       I2F(itmp, tmp);
     } else {
-      Gen::inst(Inst::Flw, tmp, -r->frame, Reg::fp);
+      Gen::inst(Inst::Flw, tmp, -(*r)->frame, Reg::fp);
     }
     return tmp;
   } else if (auto r = get_if<FReg>(&reg)) {
     return *r;
   } else if (auto r = get_if<SReg>(&reg)) {
-    I2F(**r, FReg::ft0);
-    return FReg::ft0;
+    FReg tmp = getNextFTemp(avoid);
+    // used_reg_pool.insert(**r);
+    I2F(**r, tmp);
+    return tmp;
   } else if (auto r = get_if<Reg>(&reg)) {
-    I2F(*r, FReg::ft0);
-    return FReg::ft0;
+    FReg tmp = getNextFTemp(avoid);
+    I2F(*r, tmp);
+    return tmp;
   } else {
-    fprintf(stderr, "empty getFReg");
+    fprintf(stderr, "empty getReg<FReg>");
     return FReg::null;
   }
 }
 
-void setReg(const SmartReg &reg, Reg src) {
-  if (auto r = get_if<SReg>(&reg))
+template <> FReg getReg<FReg>(const SmartReg &reg) {
+  return getReg<FReg>(reg, FReg::null);
+}
+
+template <> void setReg<Reg>(SmartReg &reg, Reg src) {
+  if (auto r = get_if<SReg>(&reg)) {
+    used_reg_pool.insert(**r);
     Gen::inst(Inst::Mv, **r, src);
-  else if (auto r = get_if<FrameVar>(&reg)) {
-    if (r->type == FrameType::Float) {
+  } else if (auto r = get_if<SVar>(&reg)) {
+    if ((*r)->type == FrameType::Float) {
       FReg ftmp = getNextFTemp();
       I2F(src, ftmp);
-      Gen::inst(Inst::Fsw, ftmp, -r->frame, Reg::fp);
+      Gen::inst(Inst::Fsw, ftmp, -(*r)->frame, Reg::fp);
     } else {
-      Gen::inst(Inst::Sw, src, -r->frame, Reg::fp);
+      auto sreg = getSavedReg();
+      if (sreg) {
+        used_reg_pool.insert(*sreg);
+        Gen::inst(Inst::Mv, *sreg, src);
+      } else
+        Gen::inst(Inst::Sw, src, -(*r)->frame, Reg::fp);
     }
   } else if (auto r = get_if<FSReg>(&reg)) {
     FReg ftmp = getNextFTemp();
     I2F(src, ftmp);
+    f_used_reg_pool.insert(**r);
     Gen::inst(Inst::Fmv, **r, ftmp);
   } else if (auto r = get_if<FReg>(&reg)) {
     FReg ftmp = getNextFTemp();
@@ -457,27 +567,34 @@ void setReg(const SmartReg &reg, Reg src) {
   }
 }
 
-void setFReg(const SmartReg &reg, FReg src) {
-  if (auto r = get_if<FSReg>(&reg))
+template <> void setReg<FReg>(SmartReg &reg, FReg src) {
+  if (auto r = get_if<FSReg>(&reg)) {
+    f_used_reg_pool.insert(**r);
     Gen::inst(Inst::Fmv, **r, src);
-  else if (auto r = get_if<FrameVar>(&reg)) {
-    if (r->type == FrameType::Int) {
+  } else if (auto r = get_if<SVar>(&reg)) {
+    if ((*r)->type == FrameType::Int) {
       Reg itmp = getNextTemp();
       F2I(src, itmp);
-      Gen::inst(Inst::Sw, itmp, -r->frame, Reg::fp);
+      Gen::inst(Inst::Sw, itmp, -(*r)->frame, Reg::fp);
     } else {
-      Gen::inst(Inst::Fsw, src, -r->frame, Reg::fp);
+      auto sreg = getSavedFReg();
+      if (sreg) {
+        f_used_reg_pool.insert(*sreg);
+        Gen::inst(Inst::Fmv, *sreg, src);
+      } else
+        Gen::inst(Inst::Fsw, src, -(*r)->frame, Reg::fp);
     }
-  } else if (auto r = get_if<FSReg>(&reg)) {
+  } else if (auto r = get_if<SReg>(&reg)) {
     Reg itmp = getNextTemp();
     F2I(src, itmp);
+    used_reg_pool.insert(**r);
     Gen::inst(Inst::Mv, **r, itmp);
-  } else if (auto r = get_if<FReg>(&reg)) {
+  } else if (auto r = get_if<Reg>(&reg)) {
     Reg itmp = getNextTemp();
     F2I(src, itmp);
     Gen::inst(Inst::Mv, *r, itmp);
   } else {
-    fprintf(stderr, "empty setFReg");
+    fprintf(stderr, "empty setReg<FReg>");
   }
 }
 
@@ -487,15 +604,20 @@ vector<Reg> free_reg_pool = {Reg::s11, Reg::s10, Reg::s9, Reg::s8,
 vector<FReg> f_free_reg_pool = {FReg::fs11, FReg::fs10, FReg::fs9, FReg::fs8,
                                 FReg::fs7,  FReg::fs6,  FReg::fs5, FReg::fs4,
                                 FReg::fs3,  FReg::fs2,  FReg::fs1, FReg::fs0};
-set<Reg> used_reg_pool;
-set<FReg> f_used_reg_pool;
 
 SReg getSavedReg() {
-  if (free_reg_pool.empty())
-    return nullptr;
+  if (free_reg_pool.empty()) {
+    auto sreg = sreg_lru.getSReg();
+    if (!sreg.has_value())
+      return nullptr;
+    if (free_reg_pool.empty()) {
+      fprintf(stderr, "empty pool in getSavedReg\n");
+      return nullptr;
+    }
+  }
   Reg reg = free_reg_pool.back();
   free_reg_pool.pop_back();
-  used_reg_pool.insert(reg);
+  // used_reg_pool.insert(reg);
   return SReg(new Reg(reg), [reg](Reg *r) {
     delete r;
     free_reg_pool.push_back(reg);
@@ -503,11 +625,18 @@ SReg getSavedReg() {
 }
 
 FSReg getSavedFReg() {
-  if (f_free_reg_pool.empty())
-    return nullptr;
+  if (f_free_reg_pool.empty()) {
+    auto sreg = f_sreg_lru.getSReg();
+    if (!sreg.has_value())
+      return nullptr;
+    if (f_free_reg_pool.empty()) {
+      fprintf(stderr, "empty pool in getSavedFReg\n");
+      return nullptr;
+    }
+  }
   FReg reg = f_free_reg_pool.back();
   f_free_reg_pool.pop_back();
-  f_used_reg_pool.insert(reg);
+  // f_used_reg_pool.insert(reg);
   return FSReg(new FReg(reg), [reg](FReg *r) {
     delete r;
     f_free_reg_pool.push_back(reg);
@@ -516,26 +645,16 @@ FSReg getSavedFReg() {
 
 SmartReg allocSavedIt() {
   auto sreg = getSavedReg();
-  if (sreg) {
+  if (sreg)
     return sreg;
-  }
-  FrameVar var;
-  function_frame_size += 4;
-  var.frame = function_frame_size;
-  var.type = FrameType::Int;
-  return var;
+  return make_shared<FrameVar>(FrameType::Int, 4);
 }
 
 SmartReg allocSavedItF() {
   auto sreg = getSavedFReg();
-  if (sreg) {
+  if (sreg)
     return sreg;
-  }
-  FrameVar var;
-  function_frame_size += 4;
-  var.frame = function_frame_size;
-  var.type = FrameType::Float;
-  return var;
+  return make_shared<FrameVar>(FrameType::Float, 4);
 }
 
 bool forceI(SmartReg &reg) {
@@ -544,12 +663,12 @@ bool forceI(SmartReg &reg) {
   if (get_if<Reg>(&reg))
     return false;
   if (get_if<FSReg>(&reg) || get_if<FReg>(&reg)) {
-    reg = getReg(reg);
+    reg = getReg<Reg>(reg);
   }
-  if (auto r = get_if<FrameVar>(&reg)) {
-    if (r->type != FrameType::Float)
+  if (auto r = get_if<SVar>(&reg)) {
+    if ((*r)->type != FrameType::Float)
       return true;
-    reg = getReg(reg);
+    reg = getReg<Reg>(reg);
   }
   return false;
 }
@@ -560,12 +679,12 @@ bool forceF(SmartReg &reg) {
   if (get_if<FReg>(&reg))
     return false;
   if (get_if<SReg>(&reg) || get_if<Reg>(&reg)) {
-    reg = getFReg(reg);
+    reg = getReg<FReg>(reg);
   }
-  if (auto r = get_if<FrameVar>(&reg)) {
-    if (r->type != FrameType::Int)
+  if (auto r = get_if<SVar>(&reg)) {
+    if ((*r)->type != FrameType::Int)
       return true;
-    reg = getFReg(reg);
+    reg = getReg<FReg>(reg);
   }
   return false;
 }
@@ -575,15 +694,13 @@ void genSavedIt(SmartReg &reg) {
     return;
   auto sreg = getSavedReg();
   if (sreg) {
-    Gen::inst(Inst::Mv, *sreg, getReg(reg));
+    Gen::inst(Inst::Mv, *sreg, getReg<Reg>(reg));
+    used_reg_pool.insert(*sreg);
     reg = sreg;
     return;
   }
-  FrameVar var;
-  function_frame_size += 4;
-  var.frame = function_frame_size;
-  var.type = FrameType::Int;
-  Gen::inst(Inst::Sw, getReg(reg), -var.frame, Reg::fp);
+  auto var = make_shared<FrameVar>(FrameType::Int, 4);
+  Gen::inst(Inst::Sw, getReg<Reg>(reg), -var->frame, Reg::fp);
   reg = var;
 }
 
@@ -592,34 +709,39 @@ void genSavedItF(SmartReg &reg) {
     return;
   auto sreg = getSavedFReg();
   if (sreg) {
-    Gen::inst(Inst::Fmv, *sreg, getFReg(reg));
+    Gen::inst(Inst::Fmv, *sreg, getReg<FReg>(reg));
+    f_used_reg_pool.insert(*sreg);
     reg = sreg;
     return;
   }
-  FrameVar var;
-  function_frame_size += 4;
-  var.frame = function_frame_size;
-  var.type = FrameType::Float;
-  Gen::inst(Inst::Fsw, getFReg(reg), -var.frame, Reg::fp);
+  auto var = make_shared<FrameVar>(FrameType::Float, 4);
+  Gen::inst(Inst::Fsw, getReg<FReg>(reg), -var->frame, Reg::fp);
   reg = var;
 }
-
-unordered_map<int, SmartReg> bind_map;
 
 void bindVar(int &varid, SmartReg &reg) {
   static int varid_num = 1;
   if (!varid)
     varid = varid_num++;
   bind_map[varid] = reg;
+  bind_use[varid] = false;
+  if (auto r = get_if<SReg>(&reg))
+    sreg_lru.add(**r, varid);
+  else if (auto r = get_if<FSReg>(&reg))
+    f_sreg_lru.add(**r, varid);
 }
 
 void resetFrame() {
   bind_map.clear();
+  bind_use.clear();
   free_reg_pool = {Reg::s11, Reg::s10, Reg::s9, Reg::s8, Reg::s7, Reg::s6,
                    Reg::s5,  Reg::s4,  Reg::s3, Reg::s2, Reg::s1};
   f_free_reg_pool = {FReg::fs11, FReg::fs10, FReg::fs9, FReg::fs8,
                      FReg::fs7,  FReg::fs6,  FReg::fs5, FReg::fs4,
                      FReg::fs3,  FReg::fs2,  FReg::fs1, FReg::fs0};
+  sreg_lru.clear();
+  f_sreg_lru.clear();
+  free_frame.clear();
   used_reg_pool.clear();
   f_used_reg_pool.clear();
 }
@@ -726,7 +848,7 @@ FReg genFloatBinOp(BINARY_OPERATOR op, FReg r1, FReg r2) {
     I2F(Reg::t0, FReg::ft0);
     break;
   default:
-    fprintf(stderr, "unknown in genIntBinOp\n");
+    fprintf(stderr, "unknown in genFloatBinOp\n");
   }
   return FReg::ft0;
 }
@@ -785,22 +907,22 @@ SmartReg genIntExpr(Node node) {
       switch (node.expr().op.binaryOp) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Beqz, Reg::t0,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(gen_int_expr_id));
         result = Reg::t0;
         gen_int_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Bnez, Reg::t0,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(gen_int_expr_id));
         result = Reg::t0;
         gen_int_expr_id++;
@@ -809,14 +931,14 @@ SmartReg genIntExpr(Node node) {
         SmartReg res1 = genExpr(node.child()[0]);
         genSavedIt(res1);
         SmartReg res2 = genExpr(node.child()[1]);
-        Reg r2 = getReg(res2);
-        Reg r1 = getReg(res1, r2);
+        Reg r2 = getReg<Reg>(res2);
+        Reg r1 = getReg<Reg>(res1, r2);
         result = genIntBinOp(node.expr().op.binaryOp, r1, r2);
       }
       }
     } else {
       SmartReg res = genExpr(node.child());
-      result = genIntUniOp(node.expr().op.unaryOp, getReg(res));
+      result = genIntUniOp(node.expr().op.unaryOp, getReg<Reg>(res));
     }
     break;
   case CONST_VALUE_NODE:
@@ -844,14 +966,17 @@ SmartReg genIntExpr(Node node) {
         Gen::inst(Inst::Lw, Reg::t0, "_g_" + node.name());
         result = Reg::t0;
       } else {
-        Gen::inst(Inst::Mv, Reg::t0,
-                  getReg(bind_map[node.identifier().symbolTableEntry->varid]));
-        result = Reg::t0;
+        // Gen::inst(
+        //    Inst::Mv, Reg::t0,
+        //    getReg<Reg>(bind_map[node.identifier().symbolTableEntry->varid]));
+        // result = Reg::t0;
+        result =
+            getReg<Reg>(bind_map[node.identifier().symbolTableEntry->varid]);
       }
       break;
     case ARRAY_ID: {
       SmartReg location = genArrayLocation(node);
-      Gen::inst(Inst::Lw, Reg::t0, 0, getReg(location));
+      Gen::inst(Inst::Lw, Reg::t0, 0, getReg<Reg>(location));
       result = Reg::t0;
     } break;
     default:
@@ -891,11 +1016,11 @@ SmartReg genFloatExpr(Node node) {
       switch (node.expr().op.binaryOp) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Beqz, Reg::t0,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(gen_float_expr_id));
         I2F(Reg::t0, FReg::ft0);
         result = FReg::ft0;
@@ -903,11 +1028,11 @@ SmartReg genFloatExpr(Node node) {
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Bnez, Reg::t0,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
+        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(gen_float_expr_id));
         I2F(Reg::t0, FReg::ft0);
         result = FReg::ft0;
@@ -917,14 +1042,14 @@ SmartReg genFloatExpr(Node node) {
         SmartReg res1 = genExpr(node.child()[0]);
         genSavedItF(res1);
         SmartReg res2 = genExpr(node.child()[1]);
-        FReg r2 = getFReg(res2);
-        FReg r1 = getFReg(res1, r2);
+        FReg r2 = getReg<FReg>(res2);
+        FReg r1 = getReg<FReg>(res1, r2);
         result = genFloatBinOp(node.expr().op.binaryOp, r1, r2);
       }
       }
     } else {
       SmartReg res = genExpr(node.child());
-      result = genFloatUniOp(node.expr().op.unaryOp, getFReg(res));
+      result = genFloatUniOp(node.expr().op.unaryOp, getReg<FReg>(res));
     }
     break;
   case CONST_VALUE_NODE:
@@ -952,14 +1077,17 @@ SmartReg genFloatExpr(Node node) {
         Gen::inst(Inst::Flw_sym, FReg::ft0, "_g_" + node.name(), Reg::t2);
         result = FReg::ft0;
       } else {
-        Gen::inst(Inst::Fmv, FReg::ft0,
-                  getFReg(bind_map[node.identifier().symbolTableEntry->varid]));
-        result = FReg::ft0;
+        // Gen::inst(
+        //     Inst::Fmv, FReg::ft0,
+        //     getReg<FReg>(bind_map[node.identifier().symbolTableEntry->varid]));
+        // result = FReg::ft0;
+        result =
+            getReg<FReg>(bind_map[node.identifier().symbolTableEntry->varid]);
       }
       break;
     case ARRAY_ID: {
       SmartReg location = genArrayLocation(node);
-      Gen::inst(Inst::Flw, FReg::ft0, 0, getReg(location));
+      Gen::inst(Inst::Flw, FReg::ft0, 0, getReg<Reg>(location));
       result = FReg::ft0;
     } break;
     default:
@@ -1006,16 +1134,16 @@ SmartReg genArrayLocation(Node node) {
   int dim = 1;
   Node exprs = node.child();
   SmartReg location = allocSavedIt();
-  setReg(location, Reg::x0);
+  setReg<Reg>(location, Reg::x0);
   for (Node expr : exprs) {
     int factor = 4;
     if (dim < prop.dimension)
       factor = prop.sizeInEachDimension[dim];
     SmartReg res = genIntExpr(expr);
-    Gen::inst(Inst::Add, Reg::t0, getReg(res), getReg(location));
+    Gen::inst(Inst::Add, Reg::t0, getReg<Reg>(res), getReg<Reg>(location));
     Gen::inst(Inst::Li, Reg::t1, factor);
     Gen::inst(Inst::Mul, Reg::t0, Reg::t0, Reg::t1);
-    setReg(location, Reg::t0);
+    setReg<Reg>(location, Reg::t0);
     dim++;
   }
   Reg addr;
@@ -1025,7 +1153,7 @@ SmartReg genArrayLocation(Node node) {
   } else {
     addr = getAddr(bind_map[sym->varid]);
   }
-  Gen::inst(Inst::Add, Reg::t0, getReg(location), addr);
+  Gen::inst(Inst::Add, Reg::t0, getReg<Reg>(location), addr);
   return Reg::t0;
 }
 
@@ -1037,21 +1165,23 @@ SmartReg genAssign(Node node) {
   case NORMAL_ID:
     if (dst->dataType == INT_TYPE) {
       if (dst.identifier().symbolTableEntry->nestingLevel == 0) {
-        Reg tmp = getReg(result);
+        Reg tmp = getReg<Reg>(result);
         Gen::inst(Inst::Sw_sym, tmp, "_g_" + dst.name(), Reg::t2);
         result = tmp;
       } else {
-        setReg(bind_map[dst.identifier().symbolTableEntry->varid],
-               getReg(result));
+        setReg<Reg>(bind_map[dst.identifier().symbolTableEntry->varid],
+                    getReg<Reg>(result));
+        bind_use[dst.identifier().symbolTableEntry->varid] = true;
       }
     } else if (dst->dataType == FLOAT_TYPE) {
       if (dst.identifier().symbolTableEntry->nestingLevel == 0) {
-        FReg tmp = getFReg(result);
+        FReg tmp = getReg<FReg>(result);
         Gen::inst(Inst::Fsw_sym, tmp, "_g_" + dst.name(), Reg::t2);
         result = tmp;
       } else {
-        setFReg(bind_map[dst.identifier().symbolTableEntry->varid],
-                getFReg(result));
+        setReg<FReg>(bind_map[dst.identifier().symbolTableEntry->varid],
+                     getReg<FReg>(result));
+        bind_use[dst.identifier().symbolTableEntry->varid] = true;
       }
     } else {
       fprintf(stderr, "unknown in genAssign\n");
@@ -1061,11 +1191,11 @@ SmartReg genAssign(Node node) {
     if (dst->dataType == INT_TYPE) {
       genSavedIt(result);
       SmartReg location = genArrayLocation(dst);
-      Gen::inst(Inst::Sw, getReg(result), 0, getReg(location));
+      Gen::inst(Inst::Sw, getReg<Reg>(result), 0, getReg<Reg>(location));
     } else if (dst->dataType == FLOAT_TYPE) {
       genSavedItF(result);
       SmartReg location = genArrayLocation(dst);
-      Gen::inst(Inst::Fsw, getFReg(result), 0, getReg(location));
+      Gen::inst(Inst::Fsw, getReg<FReg>(result), 0, getReg<Reg>(location));
     } else {
       fprintf(stderr, "unknown in genAssign\n");
     }
@@ -1087,7 +1217,7 @@ void genIf(Node node) {
   } else {
     result = genExpr(exp);
   }
-  Gen::inst(Inst::Beqz, getReg(result), "_if_end_" + to_string(now_id));
+  Gen::inst(Inst::Beqz, getReg<Reg>(result), "_if_end_" + to_string(now_id));
   Node run = node.child()[1];
   Node els = node.child()[2];
   if (run->nodeType == STMT_NODE) {
@@ -1113,9 +1243,9 @@ void genReturn(Node node) {
   if (node.child()->nodeType != NUL_NODE) {
     SmartReg result = genExpr(node.child());
     if (node.child()->dataType == INT_TYPE) {
-      Gen::inst(Inst::Mv, Reg::a0, getReg(result));
+      Gen::inst(Inst::Mv, Reg::a0, getReg<Reg>(result));
     } else {
-      Gen::inst(Inst::Fmv, FReg::fa0, getFReg(result));
+      Gen::inst(Inst::Fmv, FReg::fa0, getReg<FReg>(result));
     }
   }
   Gen::inst(Inst::J, "_end_" + cur_function_name);
@@ -1129,13 +1259,13 @@ SmartReg genFunctionCall(Node node) {
   if (func.name() == "write") {
     SmartReg reg = genExpr(param.child());
     if (param.child()->dataType == CONST_STRING_TYPE) {
-      Gen::inst(Inst::Mv, Reg::a0, getReg(reg));
+      Gen::inst(Inst::Mv, Reg::a0, getReg<Reg>(reg));
       Gen::inst(Inst::Jal, "_write_str");
     } else if (param.child()->dataType == INT_TYPE) {
-      Gen::inst(Inst::Mv, Reg::a0, getReg(reg));
+      Gen::inst(Inst::Mv, Reg::a0, getReg<Reg>(reg));
       Gen::inst(Inst::Jal, "_write_int");
     } else {
-      Gen::inst(Inst::Fmv, FReg::fa0, getFReg(reg));
+      Gen::inst(Inst::Fmv, FReg::fa0, getReg<FReg>(reg));
       Gen::inst(Inst::Jal, "_write_float");
     }
     return Reg::x0;
@@ -1175,7 +1305,7 @@ void genWhile(Node node) {
   } else {
     result = genExpr(exp);
   }
-  Gen::inst(Inst::Beqz, getReg(result), "_while_end_" + to_string(now_id));
+  Gen::inst(Inst::Beqz, getReg<Reg>(result), "_while_end_" + to_string(now_id));
   if (run->nodeType == STMT_NODE) {
     genStmt(run);
   } else if (run->nodeType == BLOCK_NODE) {
@@ -1249,11 +1379,7 @@ void genBlock(Node node) {
               for (int i = 0; i < prop.dimension; i++) {
                 size *= prop.sizeInEachDimension[i];
               }
-              FrameVar var;
-              function_frame_size += size;
-              var.frame = function_frame_size;
-              var.type = FrameType::Unknown;
-              SmartReg reg = var;
+              SmartReg reg = make_shared<FrameVar>(FrameType::Unknown, size);
               bindVar(id.identifier().symbolTableEntry->varid, reg);
             }
           } break;
@@ -1266,7 +1392,7 @@ void genBlock(Node node) {
                 genSavedIt(reg);
                 bindVar(id.identifier().symbolTableEntry->varid, reg);
               } else {
-                I2F(getReg(reg), FReg::ft0);
+                I2F(getReg<Reg>(reg), FReg::ft0);
                 SmartReg tmp = FReg::ft0;
                 genSavedItF(tmp);
                 bindVar(id.identifier().symbolTableEntry->varid, tmp);
@@ -1275,7 +1401,7 @@ void genBlock(Node node) {
               if (id.identifier()
                       .symbolTableEntry->attribute->attr.typeDescriptor
                       ->properties.dataType == INT_TYPE) {
-                F2I(getFReg(reg), Reg::t0);
+                F2I(getReg<FReg>(reg), Reg::t0);
                 SmartReg tmp = Reg::t0;
                 genSavedIt(reg);
                 bindVar(id.identifier().symbolTableEntry->varid, tmp);
@@ -1300,11 +1426,7 @@ void genBlock(Node node) {
                 size *= prop.sizeInEachDimension[i];
               }
             }
-            FrameVar var;
-            function_frame_size += size;
-            var.frame = function_frame_size;
-            var.type = FrameType::Unknown;
-            SmartReg reg = var;
+            SmartReg reg = make_shared<FrameVar>(FrameType::Unknown, size);
             bindVar(id.identifier().symbolTableEntry->varid, reg);
           } break;
           default:
@@ -2072,19 +2194,19 @@ void optimizeMove() {
       if (opt)
         continue;
       int reg0 = (int)get<Reg>(code.second[0]);
-      for(int j=i+1;j<codes.size();j++){
+      for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
-        if (Status::w_reg[reg]||Status::branch)
+        if (Status::w_reg[reg] || Status::branch)
           break;
         if (Status::w_reg[reg0]) {
-          for(int k=i+1;k<j;k++)
-            for(auto &arg:codes[k].second)
-              if(arg==code.second[0])
-                arg=code.second[1];
-          for(int k=1;k<codes[j].second.size();k++)
-            if(codes[j].second[k]==code.second[0])
-              codes[j].second[k]=code.second[1];
-          opt=true;
+          for (int k = i + 1; k < j; k++)
+            for (auto &arg : codes[k].second)
+              if (arg == code.second[0])
+                arg = code.second[1];
+          for (int k = 1; k < codes[j].second.size(); k++)
+            if (codes[j].second[k] == code.second[0])
+              codes[j].second[k] = code.second[1];
+          opt = true;
           break;
         }
       }
@@ -2126,19 +2248,19 @@ void optimizeMove() {
       if (opt)
         continue;
       int reg0 = (int)get<FReg>(code.second[0]);
-      for(int j=i+1;j<codes.size();j++){
+      for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
-        if (Status::w_freg[reg]||Status::branch)
+        if (Status::w_freg[reg] || Status::branch)
           break;
         if (Status::w_freg[reg0]) {
-          for(int k=i+1;k<j;k++)
-            for(auto &arg:codes[k].second)
-              if(arg==code.second[0])
-                arg=code.second[1];
-          for(int k=1;k<codes[j].second.size();k++)
-            if(codes[j].second[k]==code.second[0])
-              codes[j].second[k]=code.second[1];
-          opt=true;
+          for (int k = i + 1; k < j; k++)
+            for (auto &arg : codes[k].second)
+              if (arg == code.second[0])
+                arg = code.second[1];
+          for (int k = 1; k < codes[j].second.size(); k++)
+            if (codes[j].second[k] == code.second[0])
+              codes[j].second[k] = code.second[1];
+          opt = true;
           break;
         }
       }
@@ -2217,6 +2339,7 @@ void codeGen(AST_NODE *root) {
   printCode();
   optimizeMove();
   optimizeLi();
+  optimizeMove();
   freopen("output.S", "w", stdout);
   printCode();
 }

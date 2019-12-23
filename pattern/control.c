@@ -1,8 +1,54 @@
+int true(){
+    return 1;
+}
+int false(){
+    return 0;
+}
 int MAIN() {
     int a, b;
     float c, d;
     a = 1;
     b = 0;
+    if (true()+true()) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (true()&&true()) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (false()&&true()) {
+        write("wrong\n");
+    } else {
+        write("correct\n");
+    }
+    if (true()&&false()) {
+        write("wrong\n");
+    } else {
+        write("correct\n");
+    }
+    if (true()||true()) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (true()||false()) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (false()||true()) {
+        write("correct\n");
+    } else {
+        write("wrong\n");
+    }
+    if (false()||false()) {
+        write("wrong\n");
+    } else {
+        write("correct\n");
+    }
     if (a > b) {
         write("correct\n");
     } else {
