@@ -915,29 +915,37 @@ SmartReg genIntExpr(Node node) {
       // Gen::segment("text");
       // Gen::inst(Inst::Lw, Reg::t0, "_CONSTANT_" + to_string(const_id));
       // const_id++;
-      Gen::inst(Inst::Li, Reg::t0, getConstIValue(node));
-      result = Reg::t0;
+      if (getConstIValue(node)) {
+        Gen::inst(Inst::Li, Reg::t0, getConstIValue(node));
+        result = Reg::t0;
+      } else {
+        result = Reg::x0;
+      }
     } else if (node.expr().kind == BINARY_OPERATION) {
       switch (node.expr().op.binaryOp) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
+        bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Beqz, Reg::t0,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(gen_int_expr_id));
+        ok_reg_redu = old_ok_reg_redu;
         result = Reg::t0;
         gen_int_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
+        bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Bnez, Reg::t0,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(gen_int_expr_id));
+        ok_reg_redu = old_ok_reg_redu;
         result = Reg::t0;
         gen_int_expr_id++;
       } break;
@@ -964,8 +972,12 @@ SmartReg genIntExpr(Node node) {
       // Gen::segment("text");
       // Gen::inst(Inst::Lw, Reg::t0, "_CONSTANT_" + to_string(const_id));
       // const_id++;
-      Gen::inst(Inst::Li, Reg::t0, node.cons()->const_u.intval);
-      result = Reg::t0;
+      if (node.cons()->const_u.intval) {
+        Gen::inst(Inst::Li, Reg::t0, node.cons()->const_u.intval);
+        result = Reg::t0;
+      } else {
+        result = Reg::x0;
+      }
       break;
     case STRINGC:
     case FLOATC:
@@ -1030,24 +1042,28 @@ SmartReg genFloatExpr(Node node) {
       switch (node.expr().op.binaryOp) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
+        bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Beqz, Reg::t0,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(gen_float_expr_id));
+        ok_reg_redu = old_ok_reg_redu;
         I2F(Reg::t0, FReg::ft0);
         result = FReg::ft0;
         gen_float_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
+        bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
         Gen::inst(Inst::Bnez, Reg::t0,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(gen_float_expr_id));
+        ok_reg_redu = old_ok_reg_redu;
         I2F(Reg::t0, FReg::ft0);
         result = FReg::ft0;
         gen_float_expr_id++;
@@ -1225,6 +1241,8 @@ void genIf(Node node) {
   if_id++;
   int now_id = if_id;
   SmartReg result;
+  bool old_ok_reg_redu = ok_reg_redu;
+  ok_reg_redu = false;
   Node exp = node.child()[0];
   if (exp->nodeType == STMT_NODE && exp.stmt().kind == ASSIGN_STMT) {
     result = genAssign(exp);
@@ -1252,6 +1270,7 @@ void genIf(Node node) {
     }
     Gen::label("_else_end_" + to_string(now_id));
   }
+  ok_reg_redu = old_ok_reg_redu;
 }
 void genReturn(Node node) {
   if (node.child()->nodeType != NUL_NODE) {
@@ -2443,6 +2462,24 @@ void optimizeLi() {
         }
         if (opt) {
           i++;
+          continue;
+        }
+      }
+    } else if (code.first == Inst::Add) {
+      if (auto r = get_if<Reg>(&code.second[2])) {
+        if (*r == Reg::x0) {
+          newCodes.emplace_back(move(code));
+          newCodes.back().first = Inst::Mv;
+          newCodes.back().second.pop_back();
+          continue;
+        }
+      }
+    } else if (code.first == Inst::Sub) {
+      if (auto r = get_if<Reg>(&code.second[2])) {
+        if (*r == Reg::x0) {
+          newCodes.emplace_back(move(code));
+          newCodes.back().first = Inst::Mv;
+          newCodes.back().second.pop_back();
           continue;
         }
       }
