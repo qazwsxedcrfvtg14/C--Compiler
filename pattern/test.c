@@ -1,5 +1,5 @@
 int n;
-int qqq[3][5][8];
+float qqq[3][5][8];
 int fact()
 {
 	if (n == 1)
@@ -26,23 +26,30 @@ int test(int a,int b,int c,int d,int e,int f,int g,int h,int i){
 	return i;
 }
 
-int ga(int tmp[3][5][8]){
+int ga(float tmp[3][5][8]){
 	return tmp[1][2][3];
 }
-int gaa(int tmp[5][8]){
+int gaa(float tmp[5][8]){
 	return tmp[2][3];
 }
-int gaaa(int tmp[8]){
+int gaaa(float tmp[8]){
 	return tmp[3];
+}
+float rrr(){
+	return 1;
 }
 int MAIN()
 
 {
     int a0,b0,c0,d0,e0,f0,g0,h0,i0,j0,k0,l0,m0,o0,p0,q0,r0,s0,t0,u0,v0,w0,x0,y0,z0;
 	int result;
-	int ary[3][5][8];
+	float ary[3][5][8];
+	float ttt[8];
 	ary[1][2][3]=9487;
 	qqq[1][2][3]=555;
+	ttt[3]=9292;
+	write(rrr());
+	write("\n");
 	write(ary[1][2][3]);
 	write("\n");
 	write(ga(ary));
@@ -58,6 +65,8 @@ int MAIN()
 	write(gaaa(ary[1][2]));
 	write("\n");
 	write(gaaa(qqq[1][2]));
+	write("\n");
+	write(gaaa(ttt));
 	write("\n");
 	write(test(1,2,3,4,5,6,7,8,887));
 	write("\n");

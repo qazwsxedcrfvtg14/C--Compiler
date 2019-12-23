@@ -1119,7 +1119,8 @@ SmartReg genFloatExpr(Node node) {
     case NORMAL_ID:
       if (node.identifier().symbolTableEntry->nestingLevel == 0) {
         if (node->dataType == FLOAT_PTR_TYPE) {
-          result = getAddr(bind_map[node.identifier().symbolTableEntry->varid]);
+          Gen::inst(Inst::La, Reg::t0, "_g_" + node.name());
+          result = Reg::t0;
         } else {
           Gen::inst(Inst::Flw_sym, FReg::ft0, "_g_" + node.name(), Reg::t2);
           result = FReg::ft0;
@@ -1303,12 +1304,24 @@ void genIf(Node node) {
   ok_reg_redu = old_ok_reg_redu;
 }
 void genReturn(Node node) {
+  Node parent = node->parent;
+  DATA_TYPE returnType = NONE_TYPE;
+  while (parent) {
+    if (parent->nodeType == DECLARATION_NODE) {
+      if (parent->semantic_value.declSemanticValue.kind == FUNCTION_DECL)
+        returnType = parent.child()->dataType;
+      break;
+    }
+    parent = parent->parent;
+  }
   if (node.child()->nodeType != NUL_NODE) {
     SmartReg result = genExpr(node.child());
-    if (node.child()->dataType == INT_TYPE) {
+    if (returnType == INT_TYPE) {
       Gen::inst(Inst::Mv, Reg::a0, getReg<Reg>(result));
-    } else {
+    } else if (returnType == FLOAT_TYPE) {
       Gen::inst(Inst::Fmv, FReg::fa0, getReg<FReg>(result));
+    } else {
+      fprintf(stderr, "unknown in genReturn\n");
     }
   }
   Gen::inst(Inst::J, "_end_" + cur_function_name);
