@@ -29,6 +29,9 @@ enum class Inst {
   Fsw,     // Floating-point store global
   Fsw_sym, // Floating-point store global
   Addi,    // Addi
+  Slti,    // Slti
+  Andi,    // Andi
+  Ori,     // Ori
   Add,     // Add
   Sub,     // Sub
   Mul,     // Mul
@@ -794,7 +797,7 @@ SmartReg genIntExpr(Node node) {
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
         Gen::inst(Inst::Mv, Reg::t0, getReg(res));
-        Gen::inst(Inst::Bnez, getReg(res),
+        Gen::inst(Inst::Bnez, Reg::t0,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
@@ -889,7 +892,7 @@ SmartReg genFloatExpr(Node node) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
         Gen::inst(Inst::Mv, Reg::t0, getReg(res));
-        Gen::inst(Inst::Beqz, getReg(res),
+        Gen::inst(Inst::Beqz, Reg::t0,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
@@ -901,7 +904,7 @@ SmartReg genFloatExpr(Node node) {
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
         Gen::inst(Inst::Mv, Reg::t0, getReg(res));
-        Gen::inst(Inst::Bnez, getReg(res),
+        Gen::inst(Inst::Bnez, Reg::t0,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t0, getReg(res2));
@@ -1590,6 +1593,21 @@ void printCode() {
       printArgs(args);
       puts("");
       break;
+    case Inst::Slti:
+      printf("slti ");
+      printArgs(args);
+      puts("");
+      break;
+    case Inst::Andi:
+      printf("andi ");
+      printArgs(args);
+      puts("");
+      break;
+    case Inst::Ori:
+      printf("ori ");
+      printArgs(args);
+      puts("");
+      break;
     case Inst::Add:
       printf("add ");
       printArgs(args);
@@ -1875,13 +1893,14 @@ void splitDataText() {
 namespace Status {
 bitset<64> r_reg, w_reg;
 bitset<64> r_freg, w_freg;
-bool branch;
+bool branch, label;
 void getInstStatus(const Codec &code) {
   r_reg.reset();
   w_reg.reset();
   r_freg.reset();
   w_freg.reset();
   branch = false;
+  label = false;
   auto w_setRegStat = [&](int i) {
     if (auto r = std::get_if<Reg>(&code.second[i])) {
       w_reg[static_cast<int>(*r)] = 1;
@@ -1905,6 +1924,9 @@ void getInstStatus(const Codec &code) {
   case Inst::Ld:
   case Inst::Flw:
   case Inst::Addi:
+  case Inst::Slti:
+  case Inst::Andi:
+  case Inst::Ori:
   case Inst::Add:
   case Inst::Sub:
   case Inst::Mul:
@@ -1978,6 +2000,7 @@ void getInstStatus(const Codec &code) {
     break;
   case Inst::Label:
   case Inst::Segment:
+    label = true;
     break;
   default:
     r_reg.set();
@@ -2010,88 +2033,168 @@ void getInstStatus(const Codec &code) {
 }
 } // namespace Status
 void optimizeMove() {
-  CodeDec data, text;
-  bool isData = true;
-  for (auto &code : codes) {
-    if (code.first == Inst::Segment) {
-      if (get<Symbol>(code.second[0]) == "data")
-        isData = true;
-      else
-        isData = false;
-    } else {
-      if (isData)
-        data.emplace_back(move(code));
-      else
-        text.emplace_back(move(code));
-    }
-  }
-  codes.clear();
-  Gen::segment("data");
-  for (auto &code : data)
-    codes.emplace_back(move(code));
-  CodeDec newText;
-  for (int i = 0; i < text.size(); i++) {
-    auto &code = text[i];
+  CodeDec newCodes;
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
     if (code.first == Inst::Mv) {
       if (code.second[0] == code.second[1])
         continue;
-      if (newText.size() && code.second[1] == newText.back().second[0]) {
-        int reg = (int)get<Reg>(code.second[1]);
-        Status::getInstStatus(newText.back());
-        if (Status::w_reg[reg]) {
-          bool ok = false;
-          for (int j = i + 1; j < text.size(); j++) {
-            Status::getInstStatus(text[j]);
-            if (Status::r_reg[reg]) {
-              ok = false;
-              break;
+      bool opt = false;
+      int reg = (int)get<Reg>(code.second[1]);
+      for (int k = newCodes.size() - 1; k >= 0; k--) {
+        if (newCodes[k].second.size() &&
+            code.second[1] == newCodes[k].second[0]) {
+          Status::getInstStatus(newCodes[k]);
+          if (Status::w_reg[reg]) {
+            for (int j = i + 1; j < codes.size(); j++) {
+              Status::getInstStatus(codes[j]);
+              if (Status::r_reg[reg]) {
+                opt = false;
+                break;
+              }
+              if (Status::w_reg[reg]) {
+                opt = true;
+                break;
+              }
+              if (Status::branch)
+                break;
             }
-            if (Status::w_reg[reg]) {
-              ok = true;
-              break;
-            }
-            if (Status::branch)
-              break;
+            if (opt)
+              newCodes[k].second[0] = code.second[0];
           }
-          if (ok) {
-            newText.back().second[0] = code.second[0];
-            continue;
-          }
+          break;
+        }
+        Status::getInstStatus(newCodes[k]);
+        if (Status::w_reg[reg] || Status::r_reg[reg] || Status::label ||
+            Status::branch)
+          break;
+      }
+      if (opt)
+        continue;
+      int reg0 = (int)get<Reg>(code.second[0]);
+      for(int j=i+1;j<codes.size();j++){
+        Status::getInstStatus(codes[j]);
+        if (Status::w_reg[reg]||Status::branch)
+          break;
+        if (Status::w_reg[reg0]) {
+          for(int k=i+1;k<j;k++)
+            for(auto &arg:codes[k].second)
+              if(arg==code.second[0])
+                arg=code.second[1];
+          for(int k=1;k<codes[j].second.size();k++)
+            if(codes[j].second[k]==code.second[0])
+              codes[j].second[k]=code.second[1];
+          opt=true;
+          break;
         }
       }
+      if (opt)
+        continue;
     } else if (code.first == Inst::Fmv) {
       if (code.second[0] == code.second[1])
         continue;
-      if (newText.size() && code.second[1] == newText.back().second[0]) {
-        int reg = (int)get<FReg>(code.second[1]);
-        Status::getInstStatus(newText.back());
-        if (Status::w_freg[reg]) {
-          bool ok = false;
-          for (int j = i + 1; j < text.size(); j++) {
-            Status::getInstStatus(text[j]);
-            if (Status::r_freg[reg]) {
-              ok = false;
-              break;
+      bool opt = false;
+      int reg = (int)get<FReg>(code.second[1]);
+      for (int k = newCodes.size() - 1; k >= 0; k--) {
+        if (newCodes[k].second.size() &&
+            code.second[1] == newCodes[k].second[0]) {
+          Status::getInstStatus(newCodes[k]);
+          if (Status::w_freg[reg]) {
+            for (int j = i + 1; j < codes.size(); j++) {
+              Status::getInstStatus(codes[j]);
+              if (Status::r_freg[reg]) {
+                opt = false;
+                break;
+              }
+              if (Status::w_freg[reg]) {
+                opt = true;
+                break;
+              }
+              if (Status::branch)
+                break;
             }
-            if (Status::w_freg[reg]) {
-              ok = true;
-              break;
-            }
-            if (Status::branch)
-              break;
+            if (opt)
+              newCodes[k].second[0] = code.second[0];
           }
-          if (ok) {
-            newText.back().second[0] = code.second[0];
-            continue;
-          }
+          break;
+        }
+        Status::getInstStatus(newCodes[k]);
+        if (Status::w_freg[reg] || Status::r_freg[reg] || Status::label ||
+            Status::branch)
+          break;
+      }
+      if (opt)
+        continue;
+      int reg0 = (int)get<FReg>(code.second[0]);
+      for(int j=i+1;j<codes.size();j++){
+        Status::getInstStatus(codes[j]);
+        if (Status::w_freg[reg]||Status::branch)
+          break;
+        if (Status::w_freg[reg0]) {
+          for(int k=i+1;k<j;k++)
+            for(auto &arg:codes[k].second)
+              if(arg==code.second[0])
+                arg=code.second[1];
+          for(int k=1;k<codes[j].second.size();k++)
+            if(codes[j].second[k]==code.second[0])
+              codes[j].second[k]=code.second[1];
+          opt=true;
+          break;
+        }
+      }
+      if (opt)
+        continue;
+    }
+    newCodes.emplace_back(move(code));
+  }
+  swap(newCodes, codes);
+}
+
+void optimizeLi() {
+  CodeDec newCodes;
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    if (code.first == Inst::Li && i + 1 < codes.size()) {
+      if (code.second.front() == codes[i + 1].second.back()) {
+        bool opt = true;
+        switch (codes[i + 1].first) {
+        case Inst::Add:
+          newCodes.emplace_back(move(codes[i + 1]));
+          newCodes.back().first = Inst::Addi;
+          newCodes.back().second.back() = code.second.back();
+          break;
+        case Inst::Sub:
+          newCodes.emplace_back(move(codes[i + 1]));
+          newCodes.back().first = Inst::Addi;
+          newCodes.back().second.back() = -get<int>(code.second.back());
+          break;
+        case Inst::Slt:
+          newCodes.emplace_back(move(codes[i + 1]));
+          newCodes.back().first = Inst::Slti;
+          newCodes.back().second.back() = code.second.back();
+          break;
+        case Inst::And:
+          newCodes.emplace_back(move(codes[i + 1]));
+          newCodes.back().first = Inst::Andi;
+          newCodes.back().second.back() = code.second.back();
+          break;
+        case Inst::Or:
+          newCodes.emplace_back(move(codes[i + 1]));
+          newCodes.back().first = Inst::Ori;
+          newCodes.back().second.back() = code.second.back();
+          break;
+        default:
+          opt = false;
+        }
+        if (opt) {
+          i++;
+          continue;
         }
       }
     }
-    newText.emplace_back(move(code));
+    newCodes.emplace_back(move(code));
   }
-  Gen::segment("text");
-  for (auto &code : newText)
-    codes.emplace_back(move(code));
+  swap(newCodes, codes);
 }
 void codeGen(AST_NODE *root) {
   init();
@@ -2110,7 +2213,10 @@ void codeGen(AST_NODE *root) {
     }
   }
   splitDataText();
+  freopen("output0.S", "w", stdout);
+  printCode();
   optimizeMove();
+  optimizeLi();
   freopen("output.S", "w", stdout);
   printCode();
 }

@@ -1,6 +1,6 @@
 TARGET = parser
 OBJECT = parser.tab.c parser.tab.o lex.yy.c alloc.o functions.o semanticAnalysis.o symbolTable.o codegen.o
-OUTPUT = parser.output parser.tab.h output.S
+OUTPUT = parser.output parser.tab.h output.S output0.S
 #CC = clang -g
 #CXX = clang++ -g -std=c++17 -fsanitize=undefined
 CC = gcc -g
