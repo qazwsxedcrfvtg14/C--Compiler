@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include <bitset>
 #include <map>
 #include <memory>
 #include <queue>
@@ -245,7 +246,8 @@ using FSReg = shared_ptr<FReg>;
 using SmartReg = variant<Reg, SReg, FrameVar, FReg, FSReg>;
 using InstArg = variant<Reg, FReg, Symbol, int, double>;
 
-using CodeDec = vector<pair<Inst, vector<InstArg>>>;
+using Codec = pair<Inst, vector<InstArg>>;
+using CodeDec = vector<Codec>;
 CodeDec codes, codes_tmp;
 
 class Node {
@@ -1471,8 +1473,28 @@ void printArg(const InstArg &arg) {
             [](const double &arg) { printf("%f", arg); }},
         arg);
 }
+string stringArg(const InstArg &arg) {
+  return visit(
+      overloaded{[](const Reg &arg) -> string {
+                   return reg_name[static_cast<int>(arg)];
+                 },
+                 [](const FReg &arg) -> string {
+                   return freg_name[static_cast<int>(arg)];
+                 },
+                 [](const Symbol &arg) -> string { return arg.c_str(); },
+                 [](const int &arg) -> string { return to_string(arg); },
+                 [](const double &arg) -> string { return to_string(arg); }},
+      arg);
+}
+string stringArgs(const vector<InstArg> &args, int i = 0) {
+  string s;
+  for (; i < args.size(); i++) {
+    s += stringArg(args[i]) + ",";
+  }
+  return s;
+}
 void printRemain(const vector<InstArg> &args, int i) {
-  for (int i = 1; i < args.size(); i++)
+  for (; i < args.size(); i++)
     printf(" "), printArg(args[i]);
 }
 void printLoadStore(const vector<InstArg> &args) {
@@ -1822,10 +1844,253 @@ void splitDataText() {
   }
   codes.clear();
   Gen::segment("data");
+  unordered_map<string, string> data_map;
+  unordered_map<string, string> label_map;
+  for (auto &code : data) {
+    if (code.first == Inst::Label) {
+      if (get<Symbol>(code.second[0]).find("_CONSTANT_") == 0) {
+        string s = stringArgs(code.second, 1);
+        if (data_map.find(s) != data_map.end()) {
+          label_map[get<Symbol>(code.second[0])] = data_map[s];
+          continue;
+        } else {
+          data_map[s] = get<Symbol>(code.second[0]);
+        }
+      }
+    }
+    codes.emplace_back(move(code));
+  }
+  Gen::segment("text");
+  for (auto &code : text) {
+    for (auto &arg : code.second) {
+      if (auto a = get_if<Symbol>(&arg)) {
+        auto it = label_map.find(*a);
+        if (it != label_map.end())
+          arg = it->second;
+      }
+    }
+    codes.emplace_back(move(code));
+  }
+}
+namespace Status {
+bitset<64> r_reg, w_reg;
+bitset<64> r_freg, w_freg;
+bool branch;
+void getInstStatus(const Codec &code) {
+  r_reg.reset();
+  w_reg.reset();
+  r_freg.reset();
+  w_freg.reset();
+  branch = false;
+  auto w_setRegStat = [&](int i) {
+    if (auto r = std::get_if<Reg>(&code.second[i])) {
+      w_reg[static_cast<int>(*r)] = 1;
+    } else if (auto r = std::get_if<FReg>(&code.second[i])) {
+      w_freg[static_cast<int>(*r)] = 1;
+    }
+  };
+  auto r_setRegStat = [&](int i) {
+    if (auto r = std::get_if<Reg>(&code.second[i])) {
+      r_reg[static_cast<int>(*r)] = 1;
+    } else if (auto r = std::get_if<FReg>(&code.second[i])) {
+      r_freg[static_cast<int>(*r)] = 1;
+    }
+  };
+  switch (code.first) {
+  case Inst::Mv:
+  case Inst::Fmv:
+  case Inst::La:
+  case Inst::Li:
+  case Inst::Lw:
+  case Inst::Ld:
+  case Inst::Flw:
+  case Inst::Addi:
+  case Inst::Add:
+  case Inst::Sub:
+  case Inst::Mul:
+  case Inst::Div:
+  case Inst::Fadd:
+  case Inst::Fsub:
+  case Inst::Fmul:
+  case Inst::Fdiv:
+  case Inst::And:
+  case Inst::Or:
+  case Inst::Fneg:
+  case Inst::Fcvt_w_s:
+  case Inst::Fcvt_s_w:
+  case Inst::Slt:
+  case Inst::Sgt:
+  case Inst::Feq:
+  case Inst::Flt:
+  case Inst::Fgt:
+  case Inst::Fle:
+  case Inst::Fge:
+  case Inst::Seqz:
+  case Inst::Snez:
+  case Inst::Sltz:
+  case Inst::Sgtz:
+  case Inst::Slez:
+  case Inst::Sgez:
+    w_setRegStat(0);
+    for (int i = 1; i < code.second.size(); i++)
+      r_setRegStat(i);
+    break;
+  case Inst::Sw:
+  case Inst::Sd:
+  case Inst::Fsw:
+    for (int i = 0; i < code.second.size(); i++)
+      r_setRegStat(i);
+    break;
+  case Inst::Flw_sym:
+    w_setRegStat(0);
+    r_setRegStat(1);
+    w_setRegStat(2);
+    break;
+  case Inst::Sw_sym:
+  case Inst::Sd_sym:
+  case Inst::Fsw_sym:
+    r_setRegStat(0);
+    r_setRegStat(1);
+    w_setRegStat(2);
+    break;
+  case Inst::Beq:
+  case Inst::Bne:
+  case Inst::Blt:
+  case Inst::Bgt:
+  case Inst::Beqz:
+  case Inst::Bnez:
+  case Inst::Bltz:
+  case Inst::Bgtz:
+  case Inst::Blez:
+  case Inst::Bgez:
+  case Inst::J:
+  case Inst::Jr:
+    branch = true;
+    for (int i = 0; i < code.second.size(); i++)
+      r_setRegStat(i);
+    break;
+  case Inst::Jal:
+    branch = true;
+    if (code.second.size() == 1)
+      r_setRegStat(0), w_reg[static_cast<int>(Reg::ra)] = 1;
+    if (code.second.size() == 2)
+      w_setRegStat(0), r_setRegStat(1);
+    break;
+  case Inst::Label:
+  case Inst::Segment:
+    break;
+  default:
+    r_reg.set();
+    w_reg.set();
+    r_freg.set();
+    w_freg.set();
+    branch = 1;
+  }
+  if (branch) {
+    w_reg[(int)Reg::t0] = 1;
+    w_reg[(int)Reg::t1] = 1;
+    w_reg[(int)Reg::t2] = 1;
+    w_reg[(int)Reg::t3] = 1;
+    w_reg[(int)Reg::t4] = 1;
+    w_reg[(int)Reg::t5] = 1;
+    w_reg[(int)Reg::t6] = 1;
+    w_freg[(int)FReg::ft0] = 1;
+    w_freg[(int)FReg::ft1] = 1;
+    w_freg[(int)FReg::ft2] = 1;
+    w_freg[(int)FReg::ft3] = 1;
+    w_freg[(int)FReg::ft4] = 1;
+    w_freg[(int)FReg::ft5] = 1;
+    w_freg[(int)FReg::ft6] = 1;
+    w_freg[(int)FReg::ft7] = 1;
+    w_freg[(int)FReg::ft8] = 1;
+    w_freg[(int)FReg::ft9] = 1;
+    w_freg[(int)FReg::ft10] = 1;
+    w_freg[(int)FReg::ft11] = 1;
+  }
+}
+} // namespace Status
+void optimizeMove() {
+  CodeDec data, text;
+  bool isData = true;
+  for (auto &code : codes) {
+    if (code.first == Inst::Segment) {
+      if (get<Symbol>(code.second[0]) == "data")
+        isData = true;
+      else
+        isData = false;
+    } else {
+      if (isData)
+        data.emplace_back(move(code));
+      else
+        text.emplace_back(move(code));
+    }
+  }
+  codes.clear();
+  Gen::segment("data");
   for (auto &code : data)
     codes.emplace_back(move(code));
+  CodeDec newText;
+  for (int i = 0; i < text.size(); i++) {
+    auto &code = text[i];
+    if (code.first == Inst::Mv) {
+      if (code.second[0] == code.second[1])
+        continue;
+      if (newText.size() && code.second[1] == newText.back().second[0]) {
+        int reg = (int)get<Reg>(code.second[1]);
+        Status::getInstStatus(newText.back());
+        if (Status::w_reg[reg]) {
+          bool ok = false;
+          for (int j = i + 1; j < text.size(); j++) {
+            Status::getInstStatus(text[j]);
+            if (Status::r_reg[reg]) {
+              ok = false;
+              break;
+            }
+            if (Status::w_reg[reg]) {
+              ok = true;
+              break;
+            }
+            if (Status::branch)
+              break;
+          }
+          if (ok) {
+            newText.back().second[0] = code.second[0];
+            continue;
+          }
+        }
+      }
+    } else if (code.first == Inst::Fmv) {
+      if (code.second[0] == code.second[1])
+        continue;
+      if (newText.size() && code.second[1] == newText.back().second[0]) {
+        int reg = (int)get<FReg>(code.second[1]);
+        Status::getInstStatus(newText.back());
+        if (Status::w_freg[reg]) {
+          bool ok = false;
+          for (int j = i + 1; j < text.size(); j++) {
+            Status::getInstStatus(text[j]);
+            if (Status::r_freg[reg]) {
+              ok = false;
+              break;
+            }
+            if (Status::w_freg[reg]) {
+              ok = true;
+              break;
+            }
+            if (Status::branch)
+              break;
+          }
+          if (ok) {
+            newText.back().second[0] = code.second[0];
+            continue;
+          }
+        }
+      }
+    }
+    newText.emplace_back(move(code));
+  }
   Gen::segment("text");
-  for (auto &code : text)
+  for (auto &code : newText)
     codes.emplace_back(move(code));
 }
 void codeGen(AST_NODE *root) {
@@ -1845,6 +2110,7 @@ void codeGen(AST_NODE *root) {
     }
   }
   splitDataText();
-  freopen("output.S","w",stdout);
+  optimizeMove();
+  freopen("output.S", "w", stdout);
   printCode();
 }
