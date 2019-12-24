@@ -2534,40 +2534,44 @@ void optimizeLi() {
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
     if (code.first == Inst::Li && i + 1 < codes.size()) {
-      if (code.second.front() == codes[i + 1].second.back()) {
-        bool opt = true;
-        switch (codes[i + 1].first) {
-        case Inst::Add:
-          newCodes.emplace_back(move(codes[i + 1]));
-          newCodes.back().first = Inst::Addi;
-          newCodes.back().second.back() = code.second.back();
-          break;
-        case Inst::Sub:
-          newCodes.emplace_back(move(codes[i + 1]));
-          newCodes.back().first = Inst::Addi;
-          newCodes.back().second.back() = -get<int>(code.second.back());
-          break;
-        case Inst::Slt:
-          newCodes.emplace_back(move(codes[i + 1]));
-          newCodes.back().first = Inst::Slti;
-          newCodes.back().second.back() = code.second.back();
-          break;
-        case Inst::And:
-          newCodes.emplace_back(move(codes[i + 1]));
-          newCodes.back().first = Inst::Andi;
-          newCodes.back().second.back() = code.second.back();
-          break;
-        case Inst::Or:
-          newCodes.emplace_back(move(codes[i + 1]));
-          newCodes.back().first = Inst::Ori;
-          newCodes.back().second.back() = code.second.back();
-          break;
-        default:
-          opt = false;
-        }
-        if (opt) {
-          i++;
-          continue;
+      if (auto r = get_if<int>(&code.second[1])) {
+        if (abs(*r) < (1 << 11)) {
+          if (code.second.front() == codes[i + 1].second.back()) {
+            bool opt = true;
+            switch (codes[i + 1].first) {
+            case Inst::Add:
+              newCodes.emplace_back(move(codes[i + 1]));
+              newCodes.back().first = Inst::Addi;
+              newCodes.back().second.back() = code.second.back();
+              break;
+            case Inst::Sub:
+              newCodes.emplace_back(move(codes[i + 1]));
+              newCodes.back().first = Inst::Addi;
+              newCodes.back().second.back() = -get<int>(code.second.back());
+              break;
+            case Inst::Slt:
+              newCodes.emplace_back(move(codes[i + 1]));
+              newCodes.back().first = Inst::Slti;
+              newCodes.back().second.back() = code.second.back();
+              break;
+            case Inst::And:
+              newCodes.emplace_back(move(codes[i + 1]));
+              newCodes.back().first = Inst::Andi;
+              newCodes.back().second.back() = code.second.back();
+              break;
+            case Inst::Or:
+              newCodes.emplace_back(move(codes[i + 1]));
+              newCodes.back().first = Inst::Ori;
+              newCodes.back().second.back() = code.second.back();
+              break;
+            default:
+              opt = false;
+            }
+            if (opt) {
+              i++;
+              continue;
+            }
+          }
         }
       }
     } else if (code.first == Inst::Add) {
@@ -2612,11 +2616,10 @@ void codeGen(AST_NODE *root) {
   splitDataText();
   freopen("output0.S", "w", stdout);
   printCode();
-  optimizeMove();
-  optimizeLi();
   while (true) {
     int sz = codes.size();
     optimizeMove();
+    optimizeLi();
     if (codes.size() >= sz)
       break;
   }

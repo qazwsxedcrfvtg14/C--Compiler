@@ -94,8 +94,16 @@ int MAIN(){
 }
 */
 int MAIN(){
+	int x=2147483647;
+	int y=(-2147483647)-1;
 	int a=1000;
-	if(a>=3){
+	a=a+2147483647;
+	a=a+9487;
+	if(a>50){
+		write("yes");
+	}
+	/*int y=(-2147483647)-1;*/
+	if(x>=y){
 		write("yes");
 	}
 	return 0;
