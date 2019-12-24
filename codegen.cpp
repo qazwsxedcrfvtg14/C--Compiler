@@ -78,6 +78,7 @@ enum class Inst {
   Jr,
   Jal,
   Call,
+  Nop,
   Label,   // label:
   Segment, // .segment
 };
@@ -937,27 +938,27 @@ SmartReg genIntExpr(Node node) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
-        Gen::inst(Inst::Beqz, Reg::t0,
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
+        Gen::inst(Inst::Beqz, Reg::t2,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(gen_int_expr_id));
         ok_reg_redu = old_ok_reg_redu;
-        result = Reg::t0;
+        result = Reg::t2;
         gen_int_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
-        Gen::inst(Inst::Bnez, Reg::t0,
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
+        Gen::inst(Inst::Bnez, Reg::t2,
                   "_short_int_" + to_string(gen_int_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(gen_int_expr_id));
         ok_reg_redu = old_ok_reg_redu;
-        result = Reg::t0;
+        result = Reg::t2;
         gen_int_expr_id++;
       } break;
       default: {
@@ -1057,28 +1058,28 @@ SmartReg genFloatExpr(Node node) {
       case BINARY_OP_AND: {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
-        Gen::inst(Inst::Beqz, Reg::t0,
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
+        Gen::inst(Inst::Beqz, Reg::t2,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(gen_float_expr_id));
         ok_reg_redu = old_ok_reg_redu;
-        I2F(Reg::t0, FReg::ft0);
+        I2F(Reg::t2, FReg::ft0);
         result = FReg::ft0;
         gen_float_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res));
-        Gen::inst(Inst::Bnez, Reg::t0,
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
+        Gen::inst(Inst::Bnez, Reg::t2,
                   "_short_float_" + to_string(gen_float_expr_id));
         SmartReg res2 = genExpr(node.child()[1]);
-        Gen::inst(Inst::Mv, Reg::t0, getReg<Reg>(res2));
+        Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(gen_float_expr_id));
         ok_reg_redu = old_ok_reg_redu;
-        I2F(Reg::t0, FReg::ft0);
+        I2F(Reg::t2, FReg::ft0);
         result = FReg::ft0;
         gen_float_expr_id++;
       } break;
@@ -2182,6 +2183,8 @@ void printCode() {
       printArgs(args);
       puts("");
       break;
+    case Inst::Nop:
+      break;
     default:
       fprintf(stderr, "unknown %d in printCode\n", code.first);
     }
@@ -2270,6 +2273,8 @@ void getInstStatus(const Codec &code) {
     }
   };
   switch (code.first) {
+  case Inst::Nop:
+    break;
   case Inst::Mv:
   case Inst::Fmv:
   case Inst::La:
@@ -2351,6 +2356,15 @@ void getInstStatus(const Codec &code) {
       r_setRegStat(0), w_reg[static_cast<int>(Reg::ra)] = 1;
     if (code.second.size() == 2)
       w_setRegStat(0), r_setRegStat(1);
+    for (int i = (int)Reg::a0; i <= (int)Reg::a7; i++)
+      w_reg[i] = 1;
+    for (int i = (int)FReg::fa0; i <= (int)FReg::fa7; i++)
+      w_freg[i] = 1;
+    for (int i = (int)Reg::a0; i <= (int)Reg::a7; i++)
+      r_reg[i] = 1;
+    for (int i = (int)FReg::fa0; i <= (int)FReg::fa7; i++)
+      r_freg[i] = 1;
+    w_reg[(int)Reg::t2] = 1;
     break;
   case Inst::Label:
   case Inst::Segment:
@@ -2366,7 +2380,6 @@ void getInstStatus(const Codec &code) {
   if (branch) {
     w_reg[(int)Reg::t0] = 1;
     w_reg[(int)Reg::t1] = 1;
-    w_reg[(int)Reg::t2] = 1;
     w_reg[(int)Reg::t3] = 1;
     w_reg[(int)Reg::t4] = 1;
     w_reg[(int)Reg::t5] = 1;
@@ -2387,7 +2400,6 @@ void getInstStatus(const Codec &code) {
 }
 } // namespace Status
 void optimizeMove() {
-  CodeDec newCodes;
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
     if (code.first == Inst::Mv) {
@@ -2395,10 +2407,9 @@ void optimizeMove() {
         continue;
       bool opt = false;
       int reg = (int)get<Reg>(code.second[1]);
-      for (int k = newCodes.size() - 1; k >= 0; k--) {
-        if (newCodes[k].second.size() &&
-            code.second[1] == newCodes[k].second[0]) {
-          Status::getInstStatus(newCodes[k]);
+      for (int k = i - 1; k >= 0; k--) {
+        if (codes[k].second.size() && code.second[1] == codes[k].second[0]) {
+          Status::getInstStatus(codes[k]);
           if (Status::w_reg[reg]) {
             for (int j = i + 1; j < codes.size(); j++) {
               Status::getInstStatus(codes[j]);
@@ -2414,17 +2425,19 @@ void optimizeMove() {
                 break;
             }
             if (opt)
-              newCodes[k].second[0] = code.second[0];
+              codes[k].second[0] = code.second[0];
           }
           break;
         }
-        Status::getInstStatus(newCodes[k]);
+        Status::getInstStatus(codes[k]);
         if (Status::w_reg[reg] || Status::r_reg[reg] || Status::label ||
             Status::branch)
           break;
       }
-      if (opt)
+      if (opt) {
+        codes[i].first = Inst::Nop;
         continue;
+      }
       int reg0 = (int)get<Reg>(code.second[0]);
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
@@ -2442,17 +2455,20 @@ void optimizeMove() {
           break;
         }
       }
-      if (opt)
+      if (opt) {
+        codes[i].first = Inst::Nop;
         continue;
+      }
     } else if (code.first == Inst::Fmv) {
-      if (code.second[0] == code.second[1])
+      if (code.second[0] == code.second[1]) {
+        codes[i].first = Inst::Nop;
         continue;
+      }
       bool opt = false;
       int reg = (int)get<FReg>(code.second[1]);
-      for (int k = newCodes.size() - 1; k >= 0; k--) {
-        if (newCodes[k].second.size() &&
-            code.second[1] == newCodes[k].second[0]) {
-          Status::getInstStatus(newCodes[k]);
+      for (int k = i - 1; k >= 0; k--) {
+        if (codes[k].second.size() && code.second[1] == codes[k].second[0]) {
+          Status::getInstStatus(codes[k]);
           if (Status::w_freg[reg]) {
             for (int j = i + 1; j < codes.size(); j++) {
               Status::getInstStatus(codes[j]);
@@ -2468,17 +2484,19 @@ void optimizeMove() {
                 break;
             }
             if (opt)
-              newCodes[k].second[0] = code.second[0];
+              codes[k].second[0] = code.second[0];
           }
           break;
         }
-        Status::getInstStatus(newCodes[k]);
+        Status::getInstStatus(codes[k]);
         if (Status::w_freg[reg] || Status::r_freg[reg] || Status::label ||
             Status::branch)
           break;
       }
-      if (opt)
+      if (opt) {
+        codes[i].first = Inst::Nop;
         continue;
+      }
       int reg0 = (int)get<FReg>(code.second[0]);
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
@@ -2496,14 +2514,21 @@ void optimizeMove() {
           break;
         }
       }
-      if (opt)
+      if (opt) {
+        codes[i].first = Inst::Nop;
         continue;
+      }
     }
+  }
+  CodeDec newCodes;
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    if (code.first == Inst::Nop)
+      continue;
     newCodes.emplace_back(move(code));
   }
   swap(newCodes, codes);
 }
-
 void optimizeLi() {
   CodeDec newCodes;
   for (int i = 0; i < codes.size(); i++) {
@@ -2589,7 +2614,12 @@ void codeGen(AST_NODE *root) {
   printCode();
   optimizeMove();
   optimizeLi();
-  optimizeMove();
+  while (true) {
+    int sz = codes.size();
+    optimizeMove();
+    if (codes.size() >= sz)
+      break;
+  }
   freopen("output.S", "w", stdout);
   printCode();
 }
