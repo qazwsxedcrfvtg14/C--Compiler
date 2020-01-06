@@ -530,7 +530,12 @@ Reg getAddr(const SmartReg &reg, Reg avoid = Reg::x0) {
   if (auto r = get_if<SVar>(&reg)) {
     if ((*r)->type == FrameType::Unknown) {
       Reg tmp = getNextTemp(avoid);
-      Gen::inst(Inst::Addi, tmp, Reg::fp, -(*r)->frame);
+      if (abs((*r)->frame) < (1 << 11)) {
+        Gen::inst(Inst::Addi, tmp, Reg::fp, -(*r)->frame);
+      } else {
+        Gen::inst(Inst::Li, tmp, -(*r)->frame);
+        Gen::inst(Inst::Add, tmp, Reg::fp, tmp);
+      }
       return tmp;
     } else {
       return getReg<Reg>(reg);
@@ -917,6 +922,7 @@ FReg genFloatUniOp(UNARY_OPERATOR op, FReg r1) {
 
 SmartReg genIntExpr(Node node) {
   static int gen_int_expr_id = 0;
+  int now_id = gen_int_expr_id++;
   SmartReg result;
   switch (node->nodeType) {
   case EXPR_NODE:
@@ -939,27 +945,23 @@ SmartReg genIntExpr(Node node) {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
-        Gen::inst(Inst::Beqz, Reg::t2,
-                  "_short_int_" + to_string(gen_int_expr_id));
+        Gen::inst(Inst::Beqz, Reg::t2, "_short_int_" + to_string(now_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
-        Gen::label("_short_int_" + to_string(gen_int_expr_id));
+        Gen::label("_short_int_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
         result = Reg::t2;
-        gen_int_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
-        Gen::inst(Inst::Bnez, Reg::t2,
-                  "_short_int_" + to_string(gen_int_expr_id));
+        Gen::inst(Inst::Bnez, Reg::t2, "_short_int_" + to_string(now_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
-        Gen::label("_short_int_" + to_string(gen_int_expr_id));
+        Gen::label("_short_int_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
         result = Reg::t2;
-        gen_int_expr_id++;
       } break;
       default: {
         SmartReg res1 = genExpr(node.child()[0]);
@@ -1041,6 +1043,7 @@ SmartReg genIntExpr(Node node) {
 
 SmartReg genFloatExpr(Node node) {
   static int gen_float_expr_id = 0;
+  int now_id = gen_float_expr_id++;
   SmartReg result;
   switch (node->nodeType) {
   case EXPR_NODE:
@@ -1059,29 +1062,25 @@ SmartReg genFloatExpr(Node node) {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
-        Gen::inst(Inst::Beqz, Reg::t2,
-                  "_short_float_" + to_string(gen_float_expr_id));
+        Gen::inst(Inst::Beqz, Reg::t2, "_short_float_" + to_string(now_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
-        Gen::label("_short_float_" + to_string(gen_float_expr_id));
+        Gen::label("_short_float_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
         I2F(Reg::t2, FReg::ft0);
         result = FReg::ft0;
-        gen_float_expr_id++;
       } break;
       case BINARY_OP_OR: {
         SmartReg res = genExpr(node.child()[0]);
         bool old_ok_reg_redu = ok_reg_redu;
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res));
-        Gen::inst(Inst::Bnez, Reg::t2,
-                  "_short_float_" + to_string(gen_float_expr_id));
+        Gen::inst(Inst::Bnez, Reg::t2, "_short_float_" + to_string(now_id));
         SmartReg res2 = genExpr(node.child()[1]);
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
-        Gen::label("_short_float_" + to_string(gen_float_expr_id));
+        Gen::label("_short_float_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
         I2F(Reg::t2, FReg::ft0);
         result = FReg::ft0;
-        gen_float_expr_id++;
       } break;
       default: {
         SmartReg res1 = genExpr(node.child()[0]);
@@ -2021,6 +2020,7 @@ void printCode() {
     case Inst::Fcvt_w_s:
       printf("fcvt.w.s ");
       printArgs(args);
+      printf(", rtz");
       puts("");
       break;
     case Inst::Fcvt_s_w:
@@ -2403,8 +2403,10 @@ void optimizeMove() {
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
     if (code.first == Inst::Mv) {
-      if (code.second[0] == code.second[1])
+      if (code.second[0] == code.second[1]) {
+        codes[i].first = Inst::Nop;
         continue;
+      }
       bool opt = false;
       int reg = (int)get<Reg>(code.second[1]);
       for (int k = i - 1; k >= 0; k--) {
@@ -2441,7 +2443,7 @@ void optimizeMove() {
       int reg0 = (int)get<Reg>(code.second[0]);
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
-        if (Status::w_reg[reg] || Status::branch)
+        if (Status::w_reg[reg] || Status::branch || Status::label)
           break;
         if (Status::w_reg[reg0]) {
           for (int k = i + 1; k < j; k++)
@@ -2500,7 +2502,7 @@ void optimizeMove() {
       int reg0 = (int)get<FReg>(code.second[0]);
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
-        if (Status::w_freg[reg] || Status::branch)
+        if (Status::w_freg[reg] || Status::branch || Status::label)
           break;
         if (Status::w_freg[reg0]) {
           for (int k = i + 1; k < j; k++)
