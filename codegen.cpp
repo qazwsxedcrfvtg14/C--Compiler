@@ -950,6 +950,7 @@ SmartReg genIntExpr(Node node) {
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
+        Gen::inst(Inst::Snez, Reg::t2, Reg::t2);
         result = Reg::t2;
       } break;
       case BINARY_OP_OR: {
@@ -961,6 +962,7 @@ SmartReg genIntExpr(Node node) {
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_int_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
+        Gen::inst(Inst::Snez, Reg::t2, Reg::t2);
         result = Reg::t2;
       } break;
       default: {
@@ -1067,6 +1069,7 @@ SmartReg genFloatExpr(Node node) {
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
+        Gen::inst(Inst::Snez, Reg::t2, Reg::t2);
         I2F(Reg::t2, FReg::ft0);
         result = FReg::ft0;
       } break;
@@ -1079,6 +1082,7 @@ SmartReg genFloatExpr(Node node) {
         Gen::inst(Inst::Mv, Reg::t2, getReg<Reg>(res2));
         Gen::label("_short_float_" + to_string(now_id));
         ok_reg_redu = old_ok_reg_redu;
+        Gen::inst(Inst::Snez, Reg::t2, Reg::t2);
         I2F(Reg::t2, FReg::ft0);
         result = FReg::ft0;
       } break;
@@ -1353,7 +1357,6 @@ SmartReg genFunctionCall(Node node) {
     return FReg::fa0;
   } else {
     if (paramList->nodeType != NUL_NODE) {
-      // TODO: use stack when all reg is used.
       deque<Reg> a_reg = {Reg::a0, Reg::a1, Reg::a2, Reg::a3,
                           Reg::a4, Reg::a5, Reg::a6, Reg::a7};
       deque<FReg> a_freg = {FReg::fa0, FReg::fa1, FReg::fa2, FReg::fa3,
@@ -1686,11 +1689,11 @@ void genGDeclFunction(Node node) {
   Gen::inst(Inst::Sub, Reg::sp, Reg::sp, Reg::ra);
   function_frame_size = 0;
   cur_function_name = id.name();
-  swap(codes, codes_tmp);
+  std::swap(codes, codes_tmp);
   genFuncParam(param);
   genBlock(block);
   Gen::label("_end_" + id.name());
-  swap(codes, codes_tmp);
+  std::swap(codes, codes_tmp);
   map<Reg, int> reg_map;
   map<FReg, int> freg_map;
   for (Reg reg : used_reg_pool) {
@@ -1854,12 +1857,28 @@ void printRemain(const vector<InstArg> &args, int i) {
   for (; i < args.size(); i++)
     printf(" "), printArg(args[i]);
 }
-void printLoadStore(const vector<InstArg> &args) {
-  printArg(args[0]);
-  printf(", ");
-  printArg(args[1]);
-  if (args.size() == 3)
+void printLoadStore(const string &ins, const vector<InstArg> &args) {
+  if (args.size() == 3) {
+    int val = get<int>(args[1]);
+    auto arg = args[2];
+    if (abs(val) >= (1 << 11)) {
+      printf("li t2, %d\n", val);
+      printf("add t2, t2,");
+      printArg(args[2]);
+      puts("");
+      val = 0;
+      arg = Reg::t2;
+    }
+    printf("%s", ins.c_str());
+    printArg(args[0]);
+    printf(", %d", val);
     printf("("), printArg(args[2]), printf(")");
+  } else {
+    printf("%s", ins.c_str());
+    printArg(args[0]);
+    printf(", ");
+    printArg(args[1]);
+  }
 }
 void printArgs(const vector<InstArg> &args) {
   printArg(args[0]);
@@ -1883,18 +1902,15 @@ void printCode() {
       puts("");
       break;
     case Inst::Ld:
-      printf("ld ");
-      printLoadStore(args);
+      printLoadStore("ld ", args);
       puts("");
       break;
     case Inst::Lw:
-      printf("lw ");
-      printLoadStore(args);
+      printLoadStore("lw ", args);
       puts("");
       break;
     case Inst::Sd:
-      printf("sd ");
-      printLoadStore(args);
+      printLoadStore("sd ", args);
       puts("");
       break;
     case Inst::Sd_sym:
@@ -1903,8 +1919,7 @@ void printCode() {
       puts("");
       break;
     case Inst::Sw:
-      printf("sw ");
-      printLoadStore(args);
+      printLoadStore("sw ", args);
       puts("");
       break;
     case Inst::Sw_sym:
@@ -1913,8 +1928,7 @@ void printCode() {
       puts("");
       break;
     case Inst::Flw:
-      printf("flw ");
-      printLoadStore(args);
+      printLoadStore("flw ", args);
       puts("");
       break;
     case Inst::Flw_sym:
@@ -1923,8 +1937,7 @@ void printCode() {
       puts("");
       break;
     case Inst::Fsw:
-      printf("fsw ");
-      printLoadStore(args);
+      printLoadStore("fsw ", args);
       puts("");
       break;
     case Inst::Fsw_sym:
@@ -2251,27 +2264,9 @@ namespace Status {
 bitset<64> r_reg, w_reg;
 bitset<64> r_freg, w_freg;
 bool branch, label;
-void getInstStatus(const Codec &code) {
-  r_reg.reset();
-  w_reg.reset();
-  r_freg.reset();
-  w_freg.reset();
-  branch = false;
-  label = false;
-  auto w_setRegStat = [&](int i) {
-    if (auto r = std::get_if<Reg>(&code.second[i])) {
-      w_reg[static_cast<int>(*r)] = 1;
-    } else if (auto r = std::get_if<FReg>(&code.second[i])) {
-      w_freg[static_cast<int>(*r)] = 1;
-    }
-  };
-  auto r_setRegStat = [&](int i) {
-    if (auto r = std::get_if<Reg>(&code.second[i])) {
-      r_reg[static_cast<int>(*r)] = 1;
-    } else if (auto r = std::get_if<FReg>(&code.second[i])) {
-      r_freg[static_cast<int>(*r)] = 1;
-    }
-  };
+auto getWriteReadPos(const Codec &code) {
+  vector<int> wr;
+  vector<int> re;
   switch (code.first) {
   case Inst::Nop:
     break;
@@ -2312,28 +2307,128 @@ void getInstStatus(const Codec &code) {
   case Inst::Sgtz:
   case Inst::Slez:
   case Inst::Sgez:
-    w_setRegStat(0);
+    wr = {0};
     for (int i = 1; i < code.second.size(); i++)
-      r_setRegStat(i);
+      re.push_back(i);
     break;
   case Inst::Sw:
   case Inst::Sd:
   case Inst::Fsw:
     for (int i = 0; i < code.second.size(); i++)
-      r_setRegStat(i);
+      re.push_back(i);
     break;
   case Inst::Flw_sym:
-    w_setRegStat(0);
-    r_setRegStat(1);
-    w_setRegStat(2);
+    wr = {0, 2};
+    re = {1};
     break;
   case Inst::Sw_sym:
   case Inst::Sd_sym:
   case Inst::Fsw_sym:
-    r_setRegStat(0);
-    r_setRegStat(1);
-    w_setRegStat(2);
+    wr = {2};
+    re = {0, 1};
     break;
+  case Inst::Beq:
+  case Inst::Bne:
+  case Inst::Blt:
+  case Inst::Bgt:
+  case Inst::Beqz:
+  case Inst::Bnez:
+  case Inst::Bltz:
+  case Inst::Bgtz:
+  case Inst::Blez:
+  case Inst::Bgez:
+  case Inst::J:
+  case Inst::Jr:
+    for (int i = 0; i < code.second.size(); i++)
+      re.push_back(i);
+    break;
+  case Inst::Jal:
+    if (code.second.size() == 1)
+      re = {0};
+    else if (code.second.size() == 2)
+      wr = {0}, re = {0};
+    break;
+  case Inst::Label:
+  case Inst::Segment:
+    break;
+  default:
+    fprintf(stderr, "unknown in getWriteReadPos\n");
+  }
+  return tuple(wr, re);
+}
+void getInstStatus(const Codec &code) {
+  r_reg.reset();
+  w_reg.reset();
+  r_freg.reset();
+  w_freg.reset();
+  branch = false;
+  label = false;
+  auto w_setRegStat = [&](int i) {
+    if (auto r = std::get_if<Reg>(&code.second[i])) {
+      w_reg[static_cast<int>(*r)] = 1;
+    } else if (auto r = std::get_if<FReg>(&code.second[i])) {
+      w_freg[static_cast<int>(*r)] = 1;
+    }
+  };
+  auto r_setRegStat = [&](int i) {
+    if (auto r = std::get_if<Reg>(&code.second[i])) {
+      r_reg[static_cast<int>(*r)] = 1;
+    } else if (auto r = std::get_if<FReg>(&code.second[i])) {
+      r_freg[static_cast<int>(*r)] = 1;
+    }
+  };
+  switch (code.first) {
+  case Inst::Nop:
+  case Inst::Mv:
+  case Inst::Fmv:
+  case Inst::La:
+  case Inst::Li:
+  case Inst::Lw:
+  case Inst::Ld:
+  case Inst::Flw:
+  case Inst::Addi:
+  case Inst::Slti:
+  case Inst::Andi:
+  case Inst::Ori:
+  case Inst::Add:
+  case Inst::Sub:
+  case Inst::Mul:
+  case Inst::Div:
+  case Inst::Fadd:
+  case Inst::Fsub:
+  case Inst::Fmul:
+  case Inst::Fdiv:
+  case Inst::And:
+  case Inst::Or:
+  case Inst::Fneg:
+  case Inst::Fcvt_w_s:
+  case Inst::Fcvt_s_w:
+  case Inst::Slt:
+  case Inst::Sgt:
+  case Inst::Feq:
+  case Inst::Flt:
+  case Inst::Fgt:
+  case Inst::Fle:
+  case Inst::Fge:
+  case Inst::Seqz:
+  case Inst::Snez:
+  case Inst::Sltz:
+  case Inst::Sgtz:
+  case Inst::Slez:
+  case Inst::Sgez:
+  case Inst::Sw:
+  case Inst::Sd:
+  case Inst::Fsw:
+  case Inst::Flw_sym:
+  case Inst::Sw_sym:
+  case Inst::Sd_sym:
+  case Inst::Fsw_sym: {
+    auto [wr, re] = getWriteReadPos(code);
+    for (int w : wr)
+      w_setRegStat(w);
+    for (int r : re)
+      r_setRegStat(r);
+  } break;
   case Inst::Beq:
   case Inst::Bne:
   case Inst::Blt:
@@ -2415,12 +2510,18 @@ void optimizeMove() {
           if (Status::w_reg[reg]) {
             for (int j = i + 1; j < codes.size(); j++) {
               Status::getInstStatus(codes[j]);
-              if (Status::r_reg[reg]) {
-                opt = false;
+              if (Status::w_reg[reg]) {
+                auto [wr, re] = Status::getWriteReadPos(codes[j]);
+                for (int r : re) {
+                  if (codes[j].second[r] == code.second[1]) {
+                    codes[j].second[r] = code.second[0];
+                  }
+                }
+                opt = true;
                 break;
               }
-              if (Status::w_reg[reg]) {
-                opt = true;
+              if (Status::r_reg[reg]) {
+                opt = false;
                 break;
               }
               if (Status::branch)
@@ -2522,14 +2623,6 @@ void optimizeMove() {
       }
     }
   }
-  CodeDec newCodes;
-  for (int i = 0; i < codes.size(); i++) {
-    auto &code = codes[i];
-    if (code.first == Inst::Nop)
-      continue;
-    newCodes.emplace_back(move(code));
-  }
-  swap(newCodes, codes);
 }
 void optimizeLi() {
   CodeDec newCodes;
@@ -2597,7 +2690,77 @@ void optimizeLi() {
     }
     newCodes.emplace_back(move(code));
   }
-  swap(newCodes, codes);
+  std::swap(newCodes, codes);
+}
+void optimizeSnez() {
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    bool opt = false;
+    if (code.first == Inst::Snez && code.second[0] == code.second[1]) {
+      int reg = static_cast<int>(get<Reg>(code.second[0]));
+      for (int j = i + 1; j < codes.size(); j++) {
+        Status::getInstStatus(codes[j]);
+        if (Status::branch) {
+          if ((codes[j].first == Inst::Bnez || codes[j].first == Inst::Beqz) &&
+              (Status::w_reg[reg] || reg == (int)Reg::t2))
+            opt = true;
+          break;
+        }
+        if (Status::r_reg[reg])
+          break;
+        if (Status::w_reg[reg]) {
+          opt = true;
+          break;
+        }
+      }
+    } else if (code.first == Inst::Seqz) {
+      auto r = get_if<Reg>(&code.second[1]);
+      if (code.second[0] == code.second[1] || (r && *r == Reg::t0)) {
+        int reg = static_cast<int>(*r);
+        for (int j = i + 1; j < codes.size(); j++) {
+          Status::getInstStatus(codes[j]);
+          if (Status::branch) {
+            if ((codes[j].first == Inst::Bnez) &&
+                codes[j].second[0] == code.second[1] &&
+                (Status::w_reg[reg] || reg == (int)Reg::t2))
+              opt = true, codes[j].first = Inst::Beqz,
+              codes[j].second[0] = code.second[0];
+            if ((codes[j].first == Inst::Beqz) &&
+                codes[j].second[0] == code.second[1] &&
+                (Status::w_reg[reg] || reg == (int)Reg::t2))
+              opt = true, codes[j].first = Inst::Bnez,
+              codes[j].second[0] = code.second[0];
+            break;
+          }
+          if (Status::r_reg[reg] || Status::w_reg[reg])
+            break;
+        }
+      }
+    }
+    if (opt) {
+      codes[i].first = Inst::Nop;
+      continue;
+    }
+  }
+}
+void optimizeJ() {
+  for (int i = 0; i < codes.size() - 1; i++) {
+    if (codes[i].first == Inst::J && codes[i + 1].first == Inst::Label &&
+        codes[i].second[0] == codes[i + 1].second[0]) {
+      codes[i].first = Inst::Nop;
+      continue;
+    }
+  }
+}
+void optimizeNop() {
+  CodeDec newCodes;
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    if (code.first == Inst::Nop)
+      continue;
+    newCodes.emplace_back(move(code));
+  }
+  std::swap(newCodes, codes);
 }
 void codeGen(AST_NODE *root) {
   init();
@@ -2622,6 +2785,9 @@ void codeGen(AST_NODE *root) {
     int sz = codes.size();
     optimizeMove();
     optimizeLi();
+    optimizeSnez();
+    optimizeJ();
+    optimizeNop();
     if (codes.size() >= sz)
       break;
   }
