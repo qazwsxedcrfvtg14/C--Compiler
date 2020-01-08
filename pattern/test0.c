@@ -1,4 +1,11 @@
 int n;
+int test(int b,int c,int g,int e){
+	int a,d;
+	a = b * c + g * e;
+	d = b * c + g + e;
+	return a+d;
+}
+
 int fact()
 {
 	if (n == 1)
