@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include <bitset>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <list>
 #include <map>
@@ -2462,6 +2463,64 @@ void getInstStatus(const Codec &code) {
     w_reg[(int)Reg::t2] = 1;
     break;
   case Inst::Label:
+    if (get<Symbol>(code.second[0]).find("_end_") == 0) {
+      w_reg[(int)Reg::t0] = 1;
+      w_reg[(int)Reg::t1] = 1;
+      w_reg[(int)Reg::t2] = 1;
+      w_reg[(int)Reg::t3] = 1;
+      w_reg[(int)Reg::t4] = 1;
+      w_reg[(int)Reg::t5] = 1;
+      w_reg[(int)Reg::t6] = 1;
+      w_reg[(int)Reg::s0] = 1;
+      w_reg[(int)Reg::s1] = 1;
+      w_reg[(int)Reg::s2] = 1;
+      w_reg[(int)Reg::s3] = 1;
+      w_reg[(int)Reg::s4] = 1;
+      w_reg[(int)Reg::s5] = 1;
+      w_reg[(int)Reg::s6] = 1;
+      w_reg[(int)Reg::s7] = 1;
+      w_reg[(int)Reg::s8] = 1;
+      w_reg[(int)Reg::s9] = 1;
+      w_reg[(int)Reg::s11] = 1;
+      w_reg[(int)Reg::a1] = 1;
+      w_reg[(int)Reg::a2] = 1;
+      w_reg[(int)Reg::a3] = 1;
+      w_reg[(int)Reg::a4] = 1;
+      w_reg[(int)Reg::a5] = 1;
+      w_reg[(int)Reg::a6] = 1;
+      w_reg[(int)Reg::a7] = 1;
+      w_freg[(int)FReg::ft0] = 1;
+      w_freg[(int)FReg::ft1] = 1;
+      w_freg[(int)FReg::ft2] = 1;
+      w_freg[(int)FReg::ft3] = 1;
+      w_freg[(int)FReg::ft4] = 1;
+      w_freg[(int)FReg::ft5] = 1;
+      w_freg[(int)FReg::ft6] = 1;
+      w_freg[(int)FReg::ft7] = 1;
+      w_freg[(int)FReg::ft8] = 1;
+      w_freg[(int)FReg::ft9] = 1;
+      w_freg[(int)FReg::ft10] = 1;
+      w_freg[(int)FReg::ft11] = 1;
+      w_freg[(int)FReg::fs0] = 1;
+      w_freg[(int)FReg::fs1] = 1;
+      w_freg[(int)FReg::fs2] = 1;
+      w_freg[(int)FReg::fs3] = 1;
+      w_freg[(int)FReg::fs4] = 1;
+      w_freg[(int)FReg::fs5] = 1;
+      w_freg[(int)FReg::fs6] = 1;
+      w_freg[(int)FReg::fs7] = 1;
+      w_freg[(int)FReg::fs8] = 1;
+      w_freg[(int)FReg::fs9] = 1;
+      w_freg[(int)FReg::fs10] = 1;
+      w_freg[(int)FReg::fs11] = 1;
+      w_freg[(int)FReg::fa1] = 1;
+      w_freg[(int)FReg::fa2] = 1;
+      w_freg[(int)FReg::fa3] = 1;
+      w_freg[(int)FReg::fa4] = 1;
+      w_freg[(int)FReg::fa5] = 1;
+      w_freg[(int)FReg::fa6] = 1;
+      w_freg[(int)FReg::fa7] = 1;
+    }
   case Inst::Segment:
     label = true;
     break;
@@ -2503,10 +2562,11 @@ void optimizeMove() {
         continue;
       }
       bool opt = false;
+      int reg0 = (int)get<Reg>(code.second[0]);
       int reg = (int)get<Reg>(code.second[1]);
       for (int k = i - 1; k >= 0; k--) {
+        Status::getInstStatus(codes[k]);
         if (codes[k].second.size() && code.second[1] == codes[k].second[0]) {
-          Status::getInstStatus(codes[k]);
           if (Status::w_reg[reg]) {
             for (int j = i + 1; j < codes.size(); j++) {
               Status::getInstStatus(codes[j]);
@@ -2529,34 +2589,35 @@ void optimizeMove() {
             }
             if (opt)
               codes[k].second[0] = code.second[0];
+            break;
           }
-          break;
         }
-        Status::getInstStatus(codes[k]);
-        if (Status::w_reg[reg] || Status::r_reg[reg] || Status::label ||
-            Status::branch)
+        if (Status::w_reg[reg] || Status::r_reg[reg] || Status::w_reg[reg0] ||
+            Status::r_reg[reg0] || Status::label || Status::branch)
           break;
       }
       if (opt) {
         codes[i].first = Inst::Nop;
         continue;
       }
-      int reg0 = (int)get<Reg>(code.second[0]);
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
-        if (Status::w_reg[reg] || Status::branch || Status::label)
+        if (Status::branch)
           break;
         if (Status::w_reg[reg0]) {
-          for (int k = i + 1; k < j; k++)
-            for (auto &arg : codes[k].second)
-              if (arg == code.second[0])
-                arg = code.second[1];
-          for (int k = 1; k < codes[j].second.size(); k++)
-            if (codes[j].second[k] == code.second[0])
-              codes[j].second[k] = code.second[1];
+          for (int k = i + 1; k <= j; k++) {
+            auto [wr, re] = Status::getWriteReadPos(codes[k]);
+            for (int r : re) {
+              if (codes[k].second[r] == code.second[0]) {
+                codes[k].second[r] = code.second[1];
+              }
+            }
+          }
           opt = true;
           break;
         }
+        if (Status::w_reg[reg] || Status::label)
+          break;
       }
       if (opt) {
         codes[i].first = Inst::Nop;
@@ -2568,6 +2629,7 @@ void optimizeMove() {
         continue;
       }
       bool opt = false;
+      int reg0 = (int)get<FReg>(code.second[0]);
       int reg = (int)get<FReg>(code.second[1]);
       for (int k = i - 1; k >= 0; k--) {
         if (codes[k].second.size() && code.second[1] == codes[k].second[0]) {
@@ -2592,7 +2654,8 @@ void optimizeMove() {
           break;
         }
         Status::getInstStatus(codes[k]);
-        if (Status::w_freg[reg] || Status::r_freg[reg] || Status::label ||
+        if (Status::w_freg[reg] || Status::r_freg[reg] ||
+            Status::w_freg[reg0] || Status::r_freg[reg0] || Status::label ||
             Status::branch)
           break;
       }
@@ -2600,22 +2663,24 @@ void optimizeMove() {
         codes[i].first = Inst::Nop;
         continue;
       }
-      int reg0 = (int)get<FReg>(code.second[0]);
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
-        if (Status::w_freg[reg] || Status::branch || Status::label)
+        if (Status::branch)
           break;
         if (Status::w_freg[reg0]) {
-          for (int k = i + 1; k < j; k++)
-            for (auto &arg : codes[k].second)
-              if (arg == code.second[0])
-                arg = code.second[1];
-          for (int k = 1; k < codes[j].second.size(); k++)
-            if (codes[j].second[k] == code.second[0])
-              codes[j].second[k] = code.second[1];
+          for (int k = i + 1; k <= j; k++) {
+            auto [wr, re] = Status::getWriteReadPos(codes[k]);
+            for (int r : re) {
+              if (codes[k].second[r] == code.second[0]) {
+                codes[k].second[r] = code.second[1];
+              }
+            }
+          }
           opt = true;
           break;
         }
+        if (Status::w_freg[reg] || Status::label)
+          break;
       }
       if (opt) {
         codes[i].first = Inst::Nop;
@@ -2625,73 +2690,181 @@ void optimizeMove() {
   }
 }
 void optimizeLi() {
-  CodeDec newCodes;
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
-    if (code.first == Inst::Li && i + 1 < codes.size()) {
+    if (code.first == Inst::Li) {
       if (auto r = get_if<int>(&code.second[1])) {
         if (abs(*r) < (1 << 11)) {
-          if (code.second.front() == codes[i + 1].second.back()) {
-            bool opt = true;
-            switch (codes[i + 1].first) {
-            case Inst::Add:
-              newCodes.emplace_back(move(codes[i + 1]));
-              newCodes.back().first = Inst::Addi;
-              newCodes.back().second.back() = code.second.back();
-              break;
-            case Inst::Sub:
-              newCodes.emplace_back(move(codes[i + 1]));
-              newCodes.back().first = Inst::Addi;
-              newCodes.back().second.back() = -get<int>(code.second.back());
-              break;
-            case Inst::Slt:
-              newCodes.emplace_back(move(codes[i + 1]));
-              newCodes.back().first = Inst::Slti;
-              newCodes.back().second.back() = code.second.back();
-              break;
-            case Inst::And:
-              newCodes.emplace_back(move(codes[i + 1]));
-              newCodes.back().first = Inst::Andi;
-              newCodes.back().second.back() = code.second.back();
-              break;
-            case Inst::Or:
-              newCodes.emplace_back(move(codes[i + 1]));
-              newCodes.back().first = Inst::Ori;
-              newCodes.back().second.back() = code.second.back();
-              break;
-            default:
-              opt = false;
+          int reg = static_cast<int>(get<Reg>(code.second.front()));
+          for (int k = i + 1; k < codes.size(); k++) {
+            Status::getInstStatus(codes[k]);
+            if (codes[k].second.size() == 3 &&
+                code.second.front() == codes[k].second[1]) {
+              switch (codes[k].first) {
+              case Inst::Add:
+                codes[k].first = Inst::Addi;
+                codes[k].second[1] = codes[k].second[2];
+                codes[k].second.back() = code.second.back();
+                break;
+              }
             }
-            if (opt) {
-              i++;
-              continue;
+            if (code.second.front() == codes[k].second.back()) {
+              switch (codes[k].first) {
+              case Inst::Add:
+                codes[k].first = Inst::Addi;
+                codes[k].second.back() = code.second.back();
+                break;
+              case Inst::Sub:
+                codes[k].first = Inst::Addi;
+                codes[k].second.back() = -get<int>(code.second.back());
+                break;
+              case Inst::Slt:
+                codes[k].first = Inst::Slti;
+                codes[k].second.back() = code.second.back();
+                break;
+              case Inst::And:
+                codes[k].first = Inst::Andi;
+                codes[k].second.back() = code.second.back();
+                break;
+              case Inst::Or:
+                codes[k].first = Inst::Ori;
+                codes[k].second.back() = code.second.back();
+                break;
+              }
             }
+            if (Status::w_reg[reg] || Status::branch || Status::label)
+              break;
           }
         }
       }
     } else if (code.first == Inst::Add) {
+      if (auto r = get_if<Reg>(&code.second[1])) {
+        if (*r == Reg::x0) {
+          code.first = Inst::Mv;
+          code.second[1] = code.second[2];
+          code.second.pop_back();
+          continue;
+        }
+      }
       if (auto r = get_if<Reg>(&code.second[2])) {
         if (*r == Reg::x0) {
-          newCodes.emplace_back(move(code));
-          newCodes.back().first = Inst::Mv;
-          newCodes.back().second.pop_back();
+          code.first = Inst::Mv;
+          code.second.pop_back();
           continue;
         }
       }
     } else if (code.first == Inst::Sub) {
       if (auto r = get_if<Reg>(&code.second[2])) {
         if (*r == Reg::x0) {
-          newCodes.emplace_back(move(code));
-          newCodes.back().first = Inst::Mv;
-          newCodes.back().second.pop_back();
+          code.first = Inst::Mv;
+          code.second.pop_back();
+          continue;
+        }
+      }
+    } else if (code.first == Inst::Mul) {
+      if (auto r = get_if<Reg>(&code.second[1])) {
+        if (*r == Reg::x0) {
+          code.first = Inst::Mv;
+          code.second[1] = Reg::x0;
+          code.second.pop_back();
+          continue;
+        }
+      }
+      if (auto r = get_if<Reg>(&code.second[2])) {
+        if (*r == Reg::x0) {
+          code.first = Inst::Mv;
+          code.second[1] = Reg::x0;
+          code.second.pop_back();
           continue;
         }
       }
     }
-    newCodes.emplace_back(move(code));
   }
-  std::swap(newCodes, codes);
 }
+void optimizeAddi() {
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    if (code.first == Inst::Addi) {
+      if (auto r = get_if<Reg>(&code.second[1])) {
+        if (*r == Reg::x0) {
+          code.first = Inst::Li;
+          code.second[1] = code.second[2];
+          code.second.resize(2);
+        }
+      }
+    }
+  }
+}
+void optimizeConst() {
+  static map<Inst, function<int(int, int)>> simp_op = {
+      {Inst::Add, std::plus<int>()},
+      {Inst::Sub, std::minus<int>()},
+      {Inst::Mul, std::multiplies<int>()},
+      {Inst::Div, std::divides<int>()},
+      {Inst::Slt, [](int a, int b) { return a < b; }},
+      {Inst::Sgt, [](int a, int b) { return a > b; }},
+      {Inst::And, std::logical_and<int>()},
+      {Inst::Or, std::logical_or<int>()}};
+  static map<Inst, function<int(int, int)>> simp_opi = {
+      {Inst::Addi, std::plus<int>()},
+      {Inst::Slti, [](int a, int b) { return a < b; }},
+      {Inst::Andi, std::logical_and<int>()},
+      {Inst::Ori, std::logical_or<int>()},
+  };
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    if (simp_op.find(code.first) != simp_op.end()) {
+      if (get_if<Reg>(&code.second[1]) && get_if<Reg>(&code.second[2])) {
+        int reg1 = static_cast<int>(get<Reg>(code.second[1]));
+        int reg2 = static_cast<int>(get<Reg>(code.second[2]));
+        int val1, val2;
+        bool ok1 = false, ok2 = false;
+        for (int k = i - 1; k >= 0 && !(ok1 && ok2); k--) {
+          Status::getInstStatus(codes[k]);
+          if (codes[k].first == Inst::Li &&
+              codes[k].second[0] == code.second[1]) {
+            val1 = get<int>(codes[k].second[1]);
+            ok1 = true;
+          } else if (codes[k].first == Inst::Li &&
+                     codes[k].second[0] == code.second[2]) {
+            val2 = get<int>(codes[k].second[1]);
+            ok2 = true;
+          } else if (Status::w_reg[reg1] || Status::w_reg[reg2] ||
+                     Status::label) {
+            break;
+          }
+        }
+        if (ok1 && ok2) {
+          int val = simp_op[code.first](val1, val2);
+          code.first = Inst::Li;
+          code.second = {code.second[0], val};
+        }
+      }
+    } else if (simp_opi.find(code.first) != simp_opi.end()) {
+      if (get_if<Reg>(&code.second[1])) {
+        int reg1 = static_cast<int>(get<Reg>(code.second[1]));
+        int val1;
+        bool ok1 = false;
+        for (int k = i - 1; k >= 0 && !(ok1); k--) {
+          Status::getInstStatus(codes[k]);
+          if (codes[k].first == Inst::Li &&
+              codes[k].second[0] == code.second[1]) {
+            val1 = get<int>(codes[k].second[1]);
+            ok1 = true;
+          } else if (Status::w_reg[reg1] || Status::label) {
+            break;
+          }
+        }
+        if (ok1) {
+          int val = simp_opi[code.first](val1, get<int>(code.second[2]));
+          code.first = Inst::Li;
+          code.second = {code.second[0], val};
+        }
+      }
+    }
+  }
+}
+
 void optimizeSnez() {
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
@@ -2743,6 +2916,210 @@ void optimizeSnez() {
     }
   }
 }
+void optimizeUselessWrite() {
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    Status::getInstStatus(code);
+    if (Status::branch || Status::label)
+      continue;
+    auto [wr, re] = Status::getWriteReadPos(code);
+    if (wr.size() == 1 && wr[0] == 0) {
+      bool opt = false;
+      if (auto r = get_if<Reg>(&code.second[0])) {
+        int reg = static_cast<int>(*r);
+        for (int j = i + 1; j < codes.size(); j++) {
+          Status::getInstStatus(codes[j]);
+          if (Status::r_reg[reg])
+            break;
+          if (Status::w_reg[reg]) {
+            opt = true;
+            break;
+          }
+          if (Status::branch)
+            break;
+        }
+      } else if (auto r = get_if<FReg>(&code.second[0])) {
+        int reg = static_cast<int>(*r);
+        for (int j = i + 1; j < codes.size(); j++) {
+          Status::getInstStatus(codes[j]);
+          if (Status::r_freg[reg])
+            break;
+          if (Status::w_freg[reg]) {
+            opt = true;
+            break;
+          }
+          if (Status::branch)
+            break;
+        }
+      }
+      if (opt) {
+        code.first = Inst::Nop;
+      }
+    }
+  }
+}
+void optimizeHistory() {
+  unordered_multimap<string, Reg> reg_history;
+  unordered_multimap<string, FReg> freg_history;
+  vector<string> reg_status(64);
+  vector<string> freg_status(64);
+  set<Reg> reg_trigger[128];
+  set<FReg> freg_trigger[128];
+  for (int i = 0; i < codes.size() - 1; i++) {
+    auto &code = codes[i];
+    Status::getInstStatus(code);
+    if (Status::branch || Status::label) {
+      reg_history.clear();
+      freg_history.clear();
+      reg_status = vector<string>(64);
+      freg_status = vector<string>(64);
+      for (int i = 0; i < 128; i++)
+        reg_trigger[i].clear(), freg_trigger[i].clear();
+      continue;
+    }
+    auto [wr, re] = Status::getWriteReadPos(code);
+    bool ok = false;
+    if (wr.size() == 1 && wr[0] == 0) {
+      ok = code.first != Inst::Lw && code.first != Inst::Flw;
+      for (auto &arg : code.second) {
+        if (auto r = get_if<Symbol>(&arg)) {
+          ok = false;
+        }
+      }
+      if (ok) {
+        if (auto r = get_if<Reg>(&code.second[0])) {
+          auto s =
+              to_string((int)code.first) + "_" + stringArgs(code.second, 1);
+          if (reg_status[(int)*r] != s) {
+            auto rng = reg_history.equal_range(reg_status[(int)*r]);
+            for (auto it = rng.first; it != rng.second; ++it) {
+              if ((int)it->second == (int)*r) {
+                reg_history.erase(it);
+                break;
+              }
+            }
+            for (int i = 0; i < 128; i++)
+              reg_trigger[i].erase(*r);
+          }
+          auto it = reg_history.find(s);
+          if (it != reg_history.end()) {
+            if (*r == it->second) {
+              code.first = Inst::Nop;
+            } else {
+              code.first = Inst::Mv;
+              code.second = {*r, it->second};
+              reg_history.insert(make_pair(s, *r));
+            }
+          } else {
+            reg_history.insert(make_pair(s, *r));
+          }
+          for (int i = 0; i < 64; i++) {
+            if (Status::r_reg[i])
+              reg_trigger[i].insert(*r);
+            if (Status::r_freg[i])
+              reg_trigger[i + 64].insert(*r);
+          }
+          reg_status[(int)*r] = s;
+        } else if (auto r = get_if<FReg>(&code.second[0])) {
+          auto s =
+              to_string((int)code.first) + "_" + stringArgs(code.second, 1);
+          if (freg_status[(int)*r] != s) {
+            auto rng = freg_history.equal_range(freg_status[(int)*r]);
+            for (auto it = rng.first; it != rng.second; ++it) {
+              if ((int)it->second == (int)*r) {
+                freg_history.erase(it);
+                break;
+              }
+            }
+            for (int i = 0; i < 128; i++)
+              freg_trigger[i].erase(*r);
+          }
+          auto it = freg_history.find(s);
+          if (it != freg_history.end()) {
+            if (*r == it->second) {
+              code.first = Inst::Nop;
+            } else {
+              code.first = Inst::Mv;
+              code.second = {*r, it->second};
+              freg_history.insert(make_pair(s, *r));
+            }
+          } else {
+            freg_history.insert(make_pair(s, *r));
+          }
+          for (int i = 0; i < 64; i++) {
+            if (Status::r_reg[i])
+              freg_trigger[i].insert(*r);
+            if (Status::r_freg[i])
+              freg_trigger[i + 64].insert(*r);
+          }
+          freg_status[(int)*r] = s;
+        }
+      }
+      vector<Reg> junk_reg;
+      vector<FReg> junk_freg;
+      for (int i = 0; i < 64; i++) {
+        if (Status::w_reg[i]) {
+          for (Reg r : reg_trigger[i])
+            junk_reg.push_back(r);
+          for (FReg r : freg_trigger[i])
+            junk_freg.push_back(r);
+          reg_trigger[i].clear();
+          freg_trigger[i].clear();
+        }
+        if (Status::w_freg[i]) {
+          for (Reg r : reg_trigger[i + 64])
+            junk_reg.push_back(r);
+          for (FReg r : freg_trigger[i + 64])
+            junk_freg.push_back(r);
+          reg_trigger[i + 64].clear();
+          freg_trigger[i + 64].clear();
+        }
+      }
+      if (!ok) {
+        for (int i = 0; i < 64; i++) {
+          if (Status::w_reg[i]) {
+            junk_reg.push_back((Reg)i);
+          }
+          if (Status::w_freg[i]) {
+            junk_freg.push_back((FReg)i);
+          }
+        }
+      }
+      sort(junk_reg.begin(), junk_reg.end());
+      junk_reg.resize(unique(junk_reg.begin(), junk_reg.end()) -
+                      junk_reg.begin());
+      sort(junk_freg.begin(), junk_freg.end());
+      junk_freg.resize(unique(junk_freg.begin(), junk_freg.end()) -
+                       junk_freg.begin());
+      for (Reg r : junk_reg) {
+        int i = static_cast<int>(r);
+        if (reg_status[i] != "") {
+          auto rng = reg_history.equal_range(reg_status[i]);
+          for (auto it = rng.first; it != rng.second; ++it) {
+            if ((int)it->second == i) {
+              reg_history.erase(it);
+              break;
+            }
+          }
+          reg_status[i] = "";
+        }
+      }
+      for (FReg r : junk_freg) {
+        int i = static_cast<int>(r);
+        if (reg_status[i] != "") {
+          auto rng = freg_history.equal_range(freg_status[i]);
+          for (auto it = rng.first; it != rng.second; ++it) {
+            if ((int)it->second == i) {
+              freg_history.erase(it);
+              break;
+            }
+          }
+          freg_status[i] = "";
+        }
+      }
+    }
+  }
+}
 void optimizeJ() {
   for (int i = 0; i < codes.size() - 1; i++) {
     if (codes[i].first == Inst::J && codes[i + 1].first == Inst::Label &&
@@ -2785,7 +3162,11 @@ void codeGen(AST_NODE *root) {
     int sz = codes.size();
     optimizeMove();
     optimizeLi();
+    optimizeAddi();
+    optimizeConst();
     optimizeSnez();
+    optimizeUselessWrite();
+    optimizeHistory();
     optimizeJ();
     optimizeNop();
     if (codes.size() >= sz)
