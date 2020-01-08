@@ -688,7 +688,12 @@ void getExprOrConstValue(AST_NODE* exprOrConstNode, int* iValue, float* fValue)
 
 void evaluateExprValue(AST_NODE* exprNode)
 {   
-    if(exprNode->nodeType == CONST_VALUE_NODE)
+    if(exprNode->nodeType == IDENTIFIER_NODE)
+    {
+        processExprRelatedNode(exprNode);
+        return;
+    }
+    else if(exprNode->nodeType == CONST_VALUE_NODE)
     {
         processConstValueNode(exprNode);
         return;

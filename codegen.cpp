@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include <bitset>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <initializer_list>
@@ -9,7 +10,9 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 using namespace std;
@@ -1697,6 +1700,7 @@ void genGDeclFunction(Node node) {
   std::swap(codes, codes_tmp);
   map<Reg, int> reg_map;
   map<FReg, int> freg_map;
+  Gen::label("_storeStart_" + node.child()[1].name());
   for (Reg reg : used_reg_pool) {
     function_frame_size += 4;
     reg_map[reg] = function_frame_size;
@@ -1707,15 +1711,18 @@ void genGDeclFunction(Node node) {
     freg_map[reg] = function_frame_size;
     Gen::inst(Inst::Fsw, reg, -function_frame_size, Reg::fp);
   }
+  Gen::label("_storeEnd_" + node.child()[1].name());
   for (auto &code : codes_tmp)
     codes.emplace_back(move(code));
   codes_tmp.clear();
+  Gen::label("_loadStart_" + node.child()[1].name());
   for (Reg reg : used_reg_pool) {
     Gen::inst(Inst::Lw, reg, -reg_map[reg], Reg::fp);
   }
   for (FReg reg : f_used_reg_pool) {
     Gen::inst(Inst::Flw, reg, -freg_map[reg], Reg::fp);
   }
+  Gen::label("_loadEnd_" + node.child()[1].name());
   Gen::inst(Inst::Ld, Reg::ra, 8, Reg::fp);
   Gen::inst(Inst::Mv, Reg::sp, Reg::fp);
   Gen::inst(Inst::Add, Reg::sp, Reg::sp, 8);
@@ -2600,6 +2607,7 @@ void optimizeMove() {
         codes[i].first = Inst::Nop;
         continue;
       }
+      bool is_writed = false;
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
         if (Status::branch)
@@ -2616,8 +2624,10 @@ void optimizeMove() {
           opt = true;
           break;
         }
-        if (Status::w_reg[reg] || Status::label)
+        if ((is_writed && Status::r_reg[reg0]) || Status::label)
           break;
+        if (Status::w_reg[reg])
+          is_writed = true;
       }
       if (opt) {
         codes[i].first = Inst::Nop;
@@ -2663,6 +2673,7 @@ void optimizeMove() {
         codes[i].first = Inst::Nop;
         continue;
       }
+      bool is_writed = false;
       for (int j = i + 1; j < codes.size(); j++) {
         Status::getInstStatus(codes[j]);
         if (Status::branch)
@@ -2679,8 +2690,10 @@ void optimizeMove() {
           opt = true;
           break;
         }
-        if (Status::w_freg[reg] || Status::label)
+        if ((is_writed && Status::r_freg[reg0]) || Status::label)
           break;
+        if (Status::w_reg[reg])
+          is_writed = true;
       }
       if (opt) {
         codes[i].first = Inst::Nop;
@@ -3139,6 +3152,99 @@ void optimizeNop() {
   }
   std::swap(newCodes, codes);
 }
+void optimizeFrame() {
+  unordered_map<string, int> frame_size;
+  int len_fr = strlen("_frameSize_");
+  for (auto &code : codes)
+    if (code.first == Inst::Label &&
+        get<Symbol>(code.second[0]).find("_frameSize_") == 0)
+      frame_size[get<Symbol>(code.second[0]).substr(len_fr)] =
+          get<int>(code.second[2]);
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    if (code.first == Inst::Label &&
+        get<Symbol>(code.second[0]).find("_start_") == 0) {
+      int pos = i + 1;
+      int psts = 0, pste = 0, plds = 0, plde = 0;
+      for (; pos < codes.size(); pos++) {
+        if (codes[pos].first == Inst::Label &&
+            get<Symbol>(codes[pos].second[0]).find("_storeStart_") == 0) {
+          psts = pos;
+          break;
+        }
+      }
+      for (; pos < codes.size(); pos++)
+        if (codes[pos].first == Inst::Label &&
+            get<Symbol>(codes[pos].second[0]).find("_storeEnd_") == 0) {
+          pste = pos;
+          break;
+        }
+      for (; pos < codes.size(); pos++)
+        if (codes[pos].first == Inst::Label &&
+            get<Symbol>(codes[pos].second[0]).find("_loadStart_") == 0) {
+          plds = pos;
+          break;
+        }
+      for (; pos < codes.size(); pos++)
+        if (codes[pos].first == Inst::Label &&
+            get<Symbol>(codes[pos].second[0]).find("_loadEnd_") == 0) {
+          plde = pos;
+          break;
+        }
+      set<Reg> used_reg;
+      set<FReg> used_freg;
+      for (int k = pste; k < plds; k++) {
+        for (auto &arg : codes[k].second) {
+          if (auto r = get_if<Reg>(&arg))
+            used_reg.insert(*r);
+          if (auto r = get_if<FReg>(&arg))
+            used_freg.insert(*r);
+        }
+      }
+      for (int k = psts; k < pste; k++) {
+        if (codes[k].first == Inst::Sw) {
+          if (used_reg.find(get<Reg>(codes[k].second[0])) == used_reg.end()) {
+            codes[k].first = Inst::Nop;
+          }
+        } else if (codes[k].first == Inst::Fsw) {
+          if (used_freg.find(get<FReg>(codes[k].second[0])) ==
+              used_freg.end()) {
+            codes[k].first = Inst::Nop;
+          }
+        }
+      }
+      for (int k = plds; k < plde; k++) {
+        if (codes[k].first == Inst::Lw) {
+          if (used_reg.find(get<Reg>(codes[k].second[0])) == used_reg.end()) {
+            codes[k].first = Inst::Nop;
+          }
+        } else if (codes[k].first == Inst::Flw) {
+          if (used_freg.find(get<FReg>(codes[k].second[0])) ==
+              used_freg.end()) {
+            codes[k].first = Inst::Nop;
+          }
+        }
+      }
+      i = pos;
+    }
+  }
+}
+void optimizeLabel() {
+  unordered_set<string> used_label;
+  for (auto &code : codes)
+    for (auto &arg : code.second)
+      if (code.first != Inst::Label)
+        if (auto r = get_if<Symbol>(&arg))
+          used_label.insert(*r);
+  for (auto &code : codes)
+    if (code.first == Inst::Label) {
+      auto &s = get<Symbol>(code.second[0]);
+      if (s.find("_start_") == 0)
+        continue;
+      if (used_label.find(s) == used_label.end())
+        code.first = Inst::Nop;
+    }
+}
 void codeGen(AST_NODE *root) {
   init();
   auto childs = Node(root).child();
@@ -3172,6 +3278,9 @@ void codeGen(AST_NODE *root) {
     if (codes.size() >= sz)
       break;
   }
+  optimizeFrame();
+  optimizeLabel();
+  optimizeNop();
   freopen("output.S", "w", stdout);
   printCode();
 }
