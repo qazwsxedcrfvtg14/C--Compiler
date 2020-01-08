@@ -2459,15 +2459,49 @@ void getInstStatus(const Codec &code) {
       r_setRegStat(0), w_reg[static_cast<int>(Reg::ra)] = 1;
     if (code.second.size() == 2)
       w_setRegStat(0), r_setRegStat(1);
-    for (int i = (int)Reg::a0; i <= (int)Reg::a7; i++)
-      w_reg[i] = 1;
-    for (int i = (int)FReg::fa0; i <= (int)FReg::fa7; i++)
-      w_freg[i] = 1;
-    for (int i = (int)Reg::a0; i <= (int)Reg::a7; i++)
-      r_reg[i] = 1;
-    for (int i = (int)FReg::fa0; i <= (int)FReg::fa7; i++)
-      r_freg[i] = 1;
-    w_reg[(int)Reg::t2] = 1;
+    w_reg.set();
+    w_freg.set();
+    w_reg[(int)Reg::sp]=0;
+    w_reg[(int)Reg::s0]=0;
+    w_reg[(int)Reg::s1]=0;
+    w_reg[(int)Reg::s2]=0;
+    w_reg[(int)Reg::s3]=0;
+    w_reg[(int)Reg::s4]=0;
+    w_reg[(int)Reg::s5]=0;
+    w_reg[(int)Reg::s6]=0;
+    w_reg[(int)Reg::s7]=0;
+    w_reg[(int)Reg::s8]=0;
+    w_reg[(int)Reg::s9]=0;
+    w_reg[(int)Reg::s10]=0;
+    w_reg[(int)Reg::s11]=0;
+    w_freg[(int)FReg::fs0]=0;
+    w_freg[(int)FReg::fs1]=0;
+    w_freg[(int)FReg::fs2]=0;
+    w_freg[(int)FReg::fs3]=0;
+    w_freg[(int)FReg::fs4]=0;
+    w_freg[(int)FReg::fs5]=0;
+    w_freg[(int)FReg::fs6]=0;
+    w_freg[(int)FReg::fs7]=0;
+    w_freg[(int)FReg::fs8]=0;
+    w_freg[(int)FReg::fs9]=0;
+    w_freg[(int)FReg::fs10]=0;
+    w_freg[(int)FReg::fs11]=0;
+    r_reg[(int)Reg::a0]=1;
+    r_reg[(int)Reg::a1]=1;
+    r_reg[(int)Reg::a2]=1;
+    r_reg[(int)Reg::a3]=1;
+    r_reg[(int)Reg::a4]=1;
+    r_reg[(int)Reg::a5]=1;
+    r_reg[(int)Reg::a6]=1;
+    r_reg[(int)Reg::a7]=1;
+    r_freg[(int)FReg::fa0]=1;
+    r_freg[(int)FReg::fa1]=1;
+    r_freg[(int)FReg::fa2]=1;
+    r_freg[(int)FReg::fa3]=1;
+    r_freg[(int)FReg::fa4]=1;
+    r_freg[(int)FReg::fa5]=1;
+    r_freg[(int)FReg::fa6]=1;
+    r_freg[(int)FReg::fa7]=1;
     break;
   case Inst::Label:
     if (get<Symbol>(code.second[0]).find("_end_") == 0) {
