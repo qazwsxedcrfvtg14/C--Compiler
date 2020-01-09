@@ -1688,7 +1688,6 @@ void genGDeclFunction(Node node) {
   Gen::inst(Inst::Sd, Reg::ra, 0, Reg::sp);
   Gen::inst(Inst::Sd, Reg::fp, -8, Reg::sp);
   Gen::inst(Inst::Add, Reg::fp, Reg::sp, -8);
-  Gen::inst(Inst::Add, Reg::sp, Reg::sp, -16);
   Gen::inst(Inst::Lw, Reg::ra, "_frameSize_" + id.name());
   Gen::inst(Inst::Sub, Reg::sp, Reg::sp, Reg::ra);
   function_frame_size = 0;
@@ -1729,7 +1728,7 @@ void genGDeclFunction(Node node) {
   Gen::inst(Inst::Ld, Reg::fp, 0, Reg::fp);
   Gen::inst(Inst::Jr, Reg::ra);
   Gen::segment("data");
-  Gen::label("_frameSize_" + id.name(), ".word", function_frame_size);
+  Gen::label("_frameSize_" + id.name(), ".word", function_frame_size + 16);
   resetFrame();
 }
 void genGDeclVariable(Node node) {
@@ -1871,7 +1870,7 @@ void printLoadStore(const string &ins, const vector<InstArg> &args) {
     auto arg = args[2];
     if (abs(val) >= (1 << 11)) {
       printf("li t2, %d\n", val);
-      printf("add t2, t2,");
+      printf("add t2, t2, ");
       printArg(args[2]);
       puts("");
       val = 0;
@@ -1880,7 +1879,7 @@ void printLoadStore(const string &ins, const vector<InstArg> &args) {
     printf("%s", ins.c_str());
     printArg(args[0]);
     printf(", %d", val);
-    printf("("), printArg(args[2]), printf(")");
+    printf("("), printArg(arg), printf(")");
   } else {
     printf("%s", ins.c_str());
     printArg(args[0]);
@@ -2452,6 +2451,12 @@ void getInstStatus(const Codec &code) {
     branch = true;
     for (int i = 0; i < code.second.size(); i++)
       r_setRegStat(i);
+    w_reg.set();
+    w_freg.set();
+    r_reg[(int)Reg::sp] = 1;
+    r_reg[(int)Reg::fp] = 1;
+    r_reg[(int)Reg::a0] = 1;
+    r_freg[(int)FReg::fa0] = 1;
     break;
   case Inst::Jal:
     branch = true;
@@ -2462,7 +2467,7 @@ void getInstStatus(const Codec &code) {
     w_reg.set();
     w_freg.set();
     w_reg[(int)Reg::sp] = 0;
-    w_reg[(int)Reg::s0] = 0;
+    w_reg[(int)Reg::fp] = 0;
     w_reg[(int)Reg::s1] = 0;
     w_reg[(int)Reg::s2] = 0;
     w_reg[(int)Reg::s3] = 0;
@@ -2512,7 +2517,6 @@ void getInstStatus(const Codec &code) {
       w_reg[(int)Reg::t4] = 1;
       w_reg[(int)Reg::t5] = 1;
       w_reg[(int)Reg::t6] = 1;
-      w_reg[(int)Reg::s0] = 1;
       w_reg[(int)Reg::s1] = 1;
       w_reg[(int)Reg::s2] = 1;
       w_reg[(int)Reg::s3] = 1;
@@ -2594,6 +2598,39 @@ void getInstStatus(const Codec &code) {
   }
 }
 } // namespace Status
+void extendLoadStore() {
+  CodeDec newCodes;
+  for (int i = 0; i < codes.size(); i++) {
+    auto &code = codes[i];
+    auto &args = code.second;
+    switch (code.first) {
+    case Inst::Ld:
+    case Inst::Lw:
+    case Inst::Sd:
+    case Inst::Sw:
+    case Inst::Flw:
+    case Inst::Fsw:
+      if (args.size() == 3) {
+        int val = get<int>(args[1]);
+        auto arg = args[2];
+        if (abs(val) >= (1 << 11)) {
+          newCodes.emplace_back(Codec(Inst::Li, {Reg::t2, val}));
+          newCodes.emplace_back(Codec(Inst::Add, {Reg::t2, Reg::t2, args[2]}));
+          val = 0;
+          arg = Reg::t2;
+        }
+        newCodes.emplace_back(move(code));
+        newCodes.back().second[1] = val;
+        newCodes.back().second[2] = arg;
+        continue;
+      }
+    default:
+      break;
+    }
+    newCodes.emplace_back(move(code));
+  }
+  std::swap(newCodes, codes);
+}
 void optimizeMove() {
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
@@ -3267,7 +3304,7 @@ void optimizeLabel() {
   unordered_set<string> used_label;
   for (auto &code : codes)
     for (auto &arg : code.second)
-      if (code.first != Inst::Label)
+      if (code.first != Inst::Label && code.first != Inst::Nop)
         if (auto r = get_if<Symbol>(&arg))
           used_label.insert(*r);
   for (auto &code : codes)
@@ -3298,6 +3335,7 @@ void codeGen(AST_NODE *root) {
   splitDataText();
   freopen("output0.S", "w", stdout);
   printCode();
+  extendLoadStore();
   while (true) {
     int sz = codes.size();
     optimizeMove();
@@ -3308,11 +3346,11 @@ void codeGen(AST_NODE *root) {
     optimizeUselessWrite();
     optimizeHistory();
     optimizeJ();
+    optimizeFrame();
     optimizeNop();
     if (codes.size() >= sz)
       break;
   }
-  optimizeFrame();
   optimizeLabel();
   optimizeNop();
   freopen("output.S", "w", stdout);
