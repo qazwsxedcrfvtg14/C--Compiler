@@ -2453,6 +2453,31 @@ void getInstStatus(const Codec &code) {
       r_setRegStat(i);
     w_reg.set();
     w_freg.set();
+    w_reg[(int)Reg::sp] = 0;
+    w_reg[(int)Reg::fp] = 0;
+    w_reg[(int)Reg::s1] = 0;
+    w_reg[(int)Reg::s2] = 0;
+    w_reg[(int)Reg::s3] = 0;
+    w_reg[(int)Reg::s4] = 0;
+    w_reg[(int)Reg::s5] = 0;
+    w_reg[(int)Reg::s6] = 0;
+    w_reg[(int)Reg::s7] = 0;
+    w_reg[(int)Reg::s8] = 0;
+    w_reg[(int)Reg::s9] = 0;
+    w_reg[(int)Reg::s10] = 0;
+    w_reg[(int)Reg::s11] = 0;
+    w_freg[(int)FReg::fs0] = 0;
+    w_freg[(int)FReg::fs1] = 0;
+    w_freg[(int)FReg::fs2] = 0;
+    w_freg[(int)FReg::fs3] = 0;
+    w_freg[(int)FReg::fs4] = 0;
+    w_freg[(int)FReg::fs5] = 0;
+    w_freg[(int)FReg::fs6] = 0;
+    w_freg[(int)FReg::fs7] = 0;
+    w_freg[(int)FReg::fs8] = 0;
+    w_freg[(int)FReg::fs9] = 0;
+    w_freg[(int)FReg::fs10] = 0;
+    w_freg[(int)FReg::fs11] = 0;
     r_reg[(int)Reg::sp] = 1;
     r_reg[(int)Reg::fp] = 1;
     r_reg[(int)Reg::a0] = 1;
@@ -2491,6 +2516,8 @@ void getInstStatus(const Codec &code) {
     w_freg[(int)FReg::fs9] = 0;
     w_freg[(int)FReg::fs10] = 0;
     w_freg[(int)FReg::fs11] = 0;
+    r_reg[(int)Reg::sp] = 1;
+    r_reg[(int)Reg::fp] = 1;
     r_reg[(int)Reg::a0] = 1;
     r_reg[(int)Reg::a1] = 1;
     r_reg[(int)Reg::a2] = 1;
@@ -3019,7 +3046,7 @@ void optimizeUselessWrite() {
             opt = true;
             break;
           }
-          if (Status::branch)
+          if (Status::branch && codes[j].first != Inst::Jal)
             break;
         }
       } else if (auto r = get_if<FReg>(&code.second[0])) {
@@ -3032,7 +3059,7 @@ void optimizeUselessWrite() {
             opt = true;
             break;
           }
-          if (Status::branch)
+          if (Status::branch && codes[j].first != Inst::Jal)
             break;
         }
       }
