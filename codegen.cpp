@@ -36,6 +36,7 @@ enum class Inst {
   Flw_sym, // Floating-point load global
   Fsw,     // Floating-point store global
   Fsw_sym, // Floating-point store global
+  Slli,    // Slli
   Addi,    // Addi
   Slti,    // Slti
   Andi,    // Andi
@@ -1538,24 +1539,24 @@ void genBlock(Node node) {
         for (Node id : ids) {
           switch (id.identifier().kind) {
           case NORMAL_ID: {
-            if (kind == SCALAR_TYPE_DESCRIPTOR) {
-              if (type->dataType == INT_TYPE) {
-                SmartReg reg = allocSavedIt();
-                bindVar(id.identifier().symbolTableEntry->varid, reg);
-              } else {
-                SmartReg reg = allocSavedItF();
-                bindVar(id.identifier().symbolTableEntry->varid, reg);
-              }
+            // if (kind == SCALAR_TYPE_DESCRIPTOR) {
+            if (type->dataType == INT_TYPE) {
+              SmartReg reg = allocSavedIt();
+              bindVar(id.identifier().symbolTableEntry->varid, reg);
             } else {
-              int size = 4;
-              auto &prop = sym->attribute->attr.typeDescriptor->properties
-                               .arrayProperties;
-              for (int i = 0; i < prop.dimension; i++) {
-                size *= prop.sizeInEachDimension[i];
-              }
-              SmartReg reg = make_shared<FrameVar>(FrameType::Unknown, size);
+              SmartReg reg = allocSavedItF();
               bindVar(id.identifier().symbolTableEntry->varid, reg);
             }
+            // } else {
+            //   int size = 4;
+            //   auto &prop = sym->attribute->attr.typeDescriptor->properties
+            //                    .arrayProperties;
+            //   for (int i = 0; i < prop.dimension; i++) {
+            //     size *= prop.sizeInEachDimension[i];
+            //   }
+            //   SmartReg reg = make_shared<FrameVar>(FrameType::Unknown, size);
+            //   bindVar(id.identifier().symbolTableEntry->varid, reg);
+            // }
           } break;
           case WITH_INIT_ID: {
             SmartReg reg = genExpr(id.child());
@@ -1962,6 +1963,11 @@ void printCode() {
       printArgs(args);
       puts("");
       break;
+    case Inst::Slli:
+      printf("slli ");
+      printArgs(args);
+      puts("");
+      break;
     case Inst::Addi:
       printf("addi ");
       printArgs(args);
@@ -2284,6 +2290,7 @@ auto getWriteReadPos(const Codec &code) {
   case Inst::Lw:
   case Inst::Ld:
   case Inst::Flw:
+  case Inst::Slli:
   case Inst::Addi:
   case Inst::Slti:
   case Inst::Andi:
@@ -2393,6 +2400,7 @@ void getInstStatus(const Codec &code) {
   case Inst::Lw:
   case Inst::Ld:
   case Inst::Flw:
+  case Inst::Slli:
   case Inst::Addi:
   case Inst::Slti:
   case Inst::Andi:
@@ -2710,6 +2718,12 @@ void optimizeMove() {
         Status::getInstStatus(codes[j]);
         if (Status::branch)
           break;
+        if (!is_writed && codes[j].first == Inst::Mv &&
+            codes[j].second[0] == code.second[1] &&
+            code.second[0] == codes[j].second[1]) {
+          codes[j].first = Inst::Nop;
+          continue;
+        }
         if (Status::w_reg[reg0]) {
           for (int k = i + 1; k <= j; k++) {
             auto [wr, re] = Status::getWriteReadPos(codes[k]);
@@ -2776,6 +2790,12 @@ void optimizeMove() {
         Status::getInstStatus(codes[j]);
         if (Status::branch)
           break;
+        if (!is_writed && codes[j].first == Inst::Fmv &&
+            codes[j].second[0] == code.second[1] &&
+            code.second[0] == codes[j].second[1]) {
+          codes[j].first = Inst::Nop;
+          continue;
+        }
         if (Status::w_freg[reg0]) {
           for (int k = i + 1; k <= j; k++) {
             auto [wr, re] = Status::getWriteReadPos(codes[k]);
@@ -2817,6 +2837,19 @@ void optimizeLi() {
                 codes[k].second[1] = codes[k].second[2];
                 codes[k].second.back() = code.second.back();
                 break;
+              case Inst::Mul:
+                if (*r == 0) {
+                  codes[k].first = Inst::Mv;
+                  codes[k].second = {codes[k].second[0], Reg::x0};
+                } else if (*r == 1) {
+                  codes[k].first = Inst::Mv;
+                  codes[k].second = {codes[k].second[0], codes[k].second[2]};
+                } else if (*r > 0 && (1 << __lg(*r)) == *r) {
+                  codes[k].first = Inst::Slli;
+                  codes[k].second[1] = codes[k].second[2];
+                  codes[k].second.back() = __lg(*r);
+                }
+                break;
               }
             }
             if (code.second.front() == codes[k].second.back()) {
@@ -2840,6 +2873,18 @@ void optimizeLi() {
               case Inst::Or:
                 codes[k].first = Inst::Ori;
                 codes[k].second.back() = code.second.back();
+                break;
+              case Inst::Mul:
+                if (*r == 0) {
+                  codes[k].first = Inst::Mv;
+                  codes[k].second = {codes[k].second[0], Reg::x0};
+                } else if (*r == 1) {
+                  codes[k].first = Inst::Mv;
+                  codes[k].second = {codes[k].second[0], codes[k].second[1]};
+                } else if (*r > 0 && (1 << __lg(*r)) == *r) {
+                  codes[k].first = Inst::Slli;
+                  codes[k].second.back() = __lg(*r);
+                }
                 break;
               }
             }
@@ -2917,6 +2962,7 @@ void optimizeConst() {
       {Inst::And, std::logical_and<int>()},
       {Inst::Or, std::logical_or<int>()}};
   static map<Inst, function<int(int, int)>> simp_opi = {
+      {Inst::Slli, [](int a, int b) { return a << b; }},
       {Inst::Addi, std::plus<int>()},
       {Inst::Slti, [](int a, int b) { return a < b; }},
       {Inst::Andi, std::logical_and<int>()},

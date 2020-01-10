@@ -1,4 +1,4 @@
-int n;
+/*int n;
 int test(int b,int c,int g,int e){
 	int a,d;
 	a = b * c + g * e;
@@ -18,8 +18,49 @@ int fact()
 		n =n-1;
 		return (n*fact());
 	}
+}*/
+
+int True(){
+	write("1");
+	return 1;
+}
+int False(){
+	write("0");
+	return 0;
 }
 
+int MAIN(){
+	int ar[100],x;
+	int a;
+	x=87;
+	x=read();
+	write(x);
+	write("\n");
+	ar[5]=10;
+	ar[x]=60;
+	write(ar[5]);
+	write("\n");
+	write(ar[x]);
+	write("\n");
+	a=True()&&True();
+	write(" ");write(a);write("\n");
+	a=True()&&False();
+	write(" ");write(a);write("\n");
+	a=False()&&True();
+	write(" ");write(a);write("\n");
+	a=False()&&False();
+	write(" ");write(a);write("\n");
+	a=True()||True();
+	write(" ");write(a);write("\n");
+	a=True()||False();
+	write(" ");write(a);write("\n");
+	a=False()||True();
+	write(" ");write(a);write("\n");
+	a=False()||False();
+	write(" ");write(a);write("\n");
+	return 0;
+}
+/*
 int MAIN()
 
 {
@@ -42,3 +83,4 @@ int MAIN()
 	write(result);
 	write("\n");
 }
+*/
