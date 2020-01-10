@@ -2937,28 +2937,6 @@ void optimizeLi() {
     }
   }
 }
-void optimizeAddi() {
-  for (int i = 0; i < codes.size(); i++) {
-    auto &code = codes[i];
-    if (code.first == Inst::Addi) {
-      if (auto r = get_if<Reg>(&code.second[1])) {
-        if (*r == Reg::x0) {
-          code.first = Inst::Li;
-          code.second[1] = code.second[2];
-          code.second.resize(2);
-        }
-      }
-    } else if (code.first == Inst::Slli) {
-      if (auto r = get_if<Reg>(&code.second[1])) {
-        if (*r == Reg::x0) {
-          code.first = Inst::Mv;
-          code.second[1] = Reg::x0;
-          code.second.resize(2);
-        }
-      }
-    }
-  }
-}
 void optimizeConst() {
   static map<Inst, function<int(int, int)>> simp_op = {
       {Inst::Add, std::plus<int>()},
@@ -2984,6 +2962,10 @@ void optimizeConst() {
         int reg2 = static_cast<int>(get<Reg>(code.second[2]));
         int val1, val2;
         bool ok1 = false, ok2 = false;
+        if (get<Reg>(code.second[1]) == Reg::x0)
+          ok1 = true, val1 = 0;
+        if (get<Reg>(code.second[2]) == Reg::x0)
+          ok2 = true, val2 = 0;
         for (int k = i - 1; k >= 0 && !(ok1 && ok2); k--) {
           Status::getInstStatus(codes[k]);
           if (codes[k].first == Inst::Li &&
@@ -3010,6 +2992,8 @@ void optimizeConst() {
         int reg1 = static_cast<int>(get<Reg>(code.second[1]));
         int val1;
         bool ok1 = false;
+        if (get<Reg>(code.second[1]) == Reg::x0)
+          ok1 = true, val1 = 0;
         for (int k = i - 1; k >= 0 && !(ok1); k--) {
           Status::getInstStatus(codes[k]);
           if (codes[k].first == Inst::Li &&
@@ -3465,7 +3449,6 @@ void codeGen(AST_NODE *root) {
     int sz = codes.size();
     optimizeMove();
     optimizeLi();
-    optimizeAddi();
     optimizeConst();
     optimizeLoadStore();
     optimizeSnez();
