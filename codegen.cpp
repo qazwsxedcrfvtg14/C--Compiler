@@ -2948,6 +2948,14 @@ void optimizeAddi() {
           code.second.resize(2);
         }
       }
+    } else if (code.first == Inst::Slli) {
+      if (auto r = get_if<Reg>(&code.second[1])) {
+        if (*r == Reg::x0) {
+          code.first = Inst::Mv;
+          code.second[1] = Reg::x0;
+          code.second.resize(2);
+        }
+      }
     }
   }
 }
