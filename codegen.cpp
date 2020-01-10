@@ -3022,6 +3022,49 @@ void optimizeConst() {
   }
 }
 
+void optimizeLoadStore() {
+  for (int i = 1; i < codes.size(); i++) {
+    auto &code = codes[i];
+    auto &args = code.second;
+    switch (code.first) {
+    case Inst::Ld:
+    case Inst::Lw:
+    case Inst::Sd:
+    case Inst::Sw:
+    case Inst::Flw:
+    case Inst::Fsw:
+      if (args.size() == 3) {
+        if (codes[i - 1].first == Inst::Addi &&
+            codes[i - 1].second[0] == codes[i - 1].second[1] &&
+            codes[i - 1].second[0] == code.second[2]) {
+          int val = get<int>(codes[i - 1].second[2]) + get<int>(code.second[1]);
+          if (abs(val) < (1 << 11)) {
+            int reg = static_cast<int>(get<Reg>(code.second[2]));
+            bool opt = code.second[0] == code.second[2];
+            for (int j = i + 1; j < codes.size(); j++) {
+              Status::getInstStatus(codes[j]);
+              if (Status::r_reg[reg])
+                break;
+              if (Status::w_reg[reg]) {
+                opt = true;
+                break;
+              }
+              if (Status::branch)
+                break;
+            }
+            if (opt) {
+              codes[i - 1].first = Inst::Nop;
+              code.second[1] = val;
+            }
+          }
+        }
+      }
+    default:
+      break;
+    }
+  }
+}
+
 void optimizeSnez() {
   for (int i = 0; i < codes.size(); i++) {
     auto &code = codes[i];
@@ -3143,6 +3186,7 @@ void optimizeHistory() {
           ok = false;
         }
       }
+      ok |= code.first == Inst::La;
       if (ok) {
         if (auto r = get_if<Reg>(&code.second[0])) {
           auto s =
@@ -3415,6 +3459,7 @@ void codeGen(AST_NODE *root) {
     optimizeLi();
     optimizeAddi();
     optimizeConst();
+    optimizeLoadStore();
     optimizeSnez();
     optimizeUselessWrite();
     optimizeHistory();
